@@ -1,0 +1,81 @@
+/* ============================================================
+   Design tokens — arah "buku silsilah keluarga", bukan dashboard
+   SaaS generik. Font pakai system stack (BUKAN next/font/google)
+   supaya tidak gagal build di network terbatas (sama kasus dgn
+   Prisma binary yang sempat bermasalah).
+   ============================================================ */
+
+:root {
+  /* Warna */
+  --color-paper: #f2ecdd;       /* dasar krem kertas tua */
+  --color-paper-light: #f8f4ea;
+  --color-ink: #2b2620;         /* teks utama, nyaris hitam */
+  --color-moss: #3d5444;        /* hijau lumut tua, struktur/border */
+  --color-terracotta: #b5654a;  /* aksen interaktif: tombol, hover */
+  --color-terracotta-dark: #97503a;
+  --color-gold: #c9a368;        /* garis keturunan, generasi */
+  --color-line: #d8cdb0;        /* garis pemisah halus */
+  --color-danger: #8a3a2e;
+
+  /* Warna gender (border kartu di /tree) -- dipilih shade yg "diredam"
+     supaya tetap nyatu dgn palette krem/heritage, bukan biru/pink
+     cerah generik yg akan clash dgn warna lain */
+  --color-male: #3d5a73;    /* biru slate teredam */
+  --color-female: #b8677a;  /* dusty rose/pink teredam */
+
+  /* Tipografi */
+  --font-display: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* Layout */
+  --radius: 6px;
+  --shadow-card: 0 1px 3px rgba(43, 38, 32, 0.12), 0 1px 2px rgba(43, 38, 32, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 0;
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-terracotta);
+  outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

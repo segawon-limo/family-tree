@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+out/
+
+# environment variables -- JANGAN PERNAH commit file ini, isinya
+# password database & JWT secret
+.env
+.env*.local
+*.old
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# prisma -- engine binary tidak perlu di-commit, di-generate ulang
+# otomatis lewat `npx prisma generate` setiap clone
+node_modules/.prisma/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# vercel (kalau nanti deploy ke sana juga)
+.vercel
+

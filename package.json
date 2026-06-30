@@ -1,0 +1,32 @@
+{
+  "name": "family-tree-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p 5001",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "test:lca": "node --loader tsx lib/familyCalc.test.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.18.0",
+    "@types/pg": "^8.20.0",
+    "bcryptjs": "^2.4.3",
+    "jose": "^5.6.0",
+    "next": "^14.2.0",
+    "pg": "^8.22.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "prisma": "^5.18.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,191 @@
+// ============================================================
+// schema.prisma
+// Representasi Prisma dari 9 migration SQL yang sudah dibuat.
+// PENTING: migration SQL di /migrations tetap jadi source of
+// truth untuk struktur DB (constraint, trigger custom seperti
+// check_unique_urutan_per_bapak tidak bisa direpresentasikan
+// penuh di Prisma schema). Jalankan migration SQL manual dulu,
+// baru `prisma db pull` untuk sinkronkan, ATAU pakai schema ini
+// dengan `prisma migrate deploy` jika mulai dari nol.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  email       String?  @unique
+  noHpLogin   String?  @unique @map("no_hp_login")
+  passwordHash String  @map("password_hash")
+  personId    String?  @unique @map("person_id")
+  person      Person?  @relation("UserPerson", fields: [personId], references: [id])
+  role        String   @default("member") // 'admin' | 'member'
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  adminScopes      AdminScope[]
+  klaimRequests    KlaimRequest[]  @relation("UserKlaim")
+  klaimReviewed    KlaimRequest[]  @relation("ReviewerKlaim")
+  auditLogs        AuditLog[]
+  personCreated    Person[]        @relation("CreatedByUser")
+
+  @@map("users")
+}
+
+model Person {
+  id               String   @id @default(uuid())
+  nama             String
+  gender           String   // 'L' | 'P'
+  tanggalLahir     DateTime? @map("tanggal_lahir") @db.Date
+  tanggalWafat     DateTime? @map("tanggal_wafat") @db.Date
+  urutanKelahiran  Int      @map("urutan_kelahiran")
+  statusKlaim      String   @default("unclaimed") @map("status_klaim")
+  catatan          String?
+  createdById      String?  @map("created_by")
+  createdBy        User?    @relation("CreatedByUser", fields: [createdById], references: [id])
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  userAccount      User?    @relation("UserPerson")
+
+  // relasi sebagai parent
+  childrenLink     ParentChild[] @relation("AsParent")
+  // relasi sebagai child
+  parentsLink      ParentChild[] @relation("AsChild")
+
+  spousesAsP1      Spouse[] @relation("SpouseP1")
+  spousesAsP2      Spouse[] @relation("SpouseP2")
+
+  kontak           PersonKontak?
+  klaimRequests    KlaimRequest[]
+  adminScopeRoot   AdminScope[]
+  passwordTokens   PasswordSetupToken[]
+  auditTargets     AuditLog[]
+
+  @@map("person")
+}
+
+model ParentChild {
+  id        String   @id @default(uuid())
+  parentId  String   @map("parent_id")
+  childId   String   @map("child_id")
+  parent    Person   @relation("AsParent", fields: [parentId], references: [id])
+  child     Person   @relation("AsChild", fields: [childId], references: [id])
+  tipe      String   @default("kandung") // 'kandung' | 'angkat'
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([parentId, childId])
+  @@map("parent_child")
+}
+
+model Spouse {
+  id            String    @id @default(uuid())
+  person1Id     String    @map("person1_id")
+  person2Id     String    @map("person2_id")
+  person1       Person    @relation("SpouseP1", fields: [person1Id], references: [id])
+  person2       Person    @relation("SpouseP2", fields: [person2Id], references: [id])
+  status        String    @default("menikah") // menikah | cerai | wafat
+  tanggalNikah  DateTime? @map("tanggal_nikah") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@unique([person1Id, person2Id])
+  @@map("spouse")
+}
+
+model PersonKontak {
+  personId        String   @id @map("person_id")
+  person          Person   @relation(fields: [personId], references: [id])
+  noHpUtama       String?  @map("no_hp_utama")
+  noHpAlternatif  String?  @map("no_hp_alternatif")
+  alamatDomisili  String?  @map("alamat_domisili")
+  kota            String?
+  pekerjaan       String?
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@map("person_kontak")
+}
+
+model IstilahPanggilan {
+  id      Int     @id @default(autoincrement())
+  gap     Int
+  arah    String  // 'atas' | 'bawah'
+  gender  String? // 'L' | 'P' | null
+  posisi  String? // 'tua' | 'muda' | null
+  istilah String
+
+  @@unique([gap, arah, gender, posisi])
+  @@map("istilah_panggilan")
+}
+
+model KodeKeluarga {
+  id        String    @id @default(uuid())
+  kode      String    @unique
+  aktif     Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  expiredAt DateTime? @map("expired_at")
+
+  @@map("kode_keluarga")
+}
+
+model KlaimRequest {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  personId     String    @map("person_id")
+  user         User      @relation("UserKlaim", fields: [userId], references: [id])
+  person       Person    @relation(fields: [personId], references: [id])
+  status       String    @default("pending") // pending | approved | rejected
+  requestedAt  DateTime  @default(now()) @map("requested_at")
+  reviewedById String?   @map("reviewed_by")
+  reviewedBy   User?     @relation("ReviewerKlaim", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime? @map("reviewed_at")
+
+  passwordTokens PasswordSetupToken[]
+
+  @@map("klaim_request")
+}
+
+model AdminScope {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  rootPersonId String   @map("root_person_id")
+  user         User     @relation(fields: [userId], references: [id])
+  rootPerson   Person   @relation(fields: [rootPersonId], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, rootPersonId])
+  @@map("admin_scope")
+}
+
+model PasswordSetupToken {
+  id              String       @id @default(uuid())
+  klaimRequestId  String       @map("klaim_request_id")
+  personId        String       @map("person_id")
+  klaimRequest    KlaimRequest @relation(fields: [klaimRequestId], references: [id])
+  person          Person       @relation(fields: [personId], references: [id])
+  token           String       @unique
+  expiredAt       DateTime     @map("expired_at")
+  usedAt          DateTime?    @map("used_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  @@map("password_setup_token")
+}
+
+model AuditLog {
+  id              String    @id @default(uuid())
+  userId          String?   @map("user_id")
+  user            User?     @relation(fields: [userId], references: [id])
+  action          String
+  targetPersonId  String?   @map("target_person_id")
+  targetPerson    Person?   @relation(fields: [targetPersonId], references: [id])
+  detail          Json?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@map("audit_log")
+}
