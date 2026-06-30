@@ -35,3 +35,5 @@ desktop.ini
 # vercel (kalau nanti deploy ke sana juga)
 .vercel
 
+# storage
+storage/
