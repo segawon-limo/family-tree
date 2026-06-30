@@ -23,6 +23,7 @@ export async function GET() {
     urutanKelahiran: number;
     tanggalLahir: Date | null;
     catatan: string | null;
+    fotoPath: string | null;
     parentsLink: { parent: { id: string; nama: string; gender: string } }[];
   };
 
@@ -36,6 +37,8 @@ export async function GET() {
       urutanKelahiran: p.urutanKelahiran,
       tanggalLahir: p.tanggalLahir,
       catatan: p.catatan,
+      // null = belum upload foto -- frontend tampilkan placeholder
+      fotoUrl: p.fotoPath ? `/api/foto/${p.id}` : null,
       bapakId: bapak?.id ?? null,
       bapakNama: bapak?.nama ?? null,
       ibuId: ibu?.id ?? null,

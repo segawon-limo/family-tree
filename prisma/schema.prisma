@@ -47,6 +47,7 @@ model Person {
   urutanKelahiran  Int      @map("urutan_kelahiran")
   statusKlaim      String   @default("unclaimed") @map("status_klaim")
   catatan          String?
+  fotoPath         String?  @map("foto_path")
   createdById      String?  @map("created_by")
   createdBy        User?    @relation("CreatedByUser", fields: [createdById], references: [id])
   createdAt        DateTime @default(now()) @map("created_at")

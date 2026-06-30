@@ -235,6 +235,20 @@ export async function tentukanPanggilan(
   person1Id: string,
   person2Id: string
 ): Promise<string> {
+  if (person1Id === person2Id) return 'diri sendiri';
+
+  // Cek dulu: apakah person2 itu PASANGAN LANGSUNG person1 sendiri?
+  // Ini KASUS YANG SEBELUMNYA TIDAK TERTANGANI SAMA SEKALI -- kode lama
+  // cuma mencari relasi darah, lalu spouse-of-person2, lalu spouse-of-
+  // person1, tapi tidak pernah cek "person2 ADALAH spouse person1".
+  // Akibatnya suami/istri sendiri selalu jatuh ke fallback "tidak ada
+  // hubungan keluarga tercatat" -- ditemukan dari bug report nyata.
+  const spouseOfSelf = await getSpouseOf(prisma, person1Id);
+  if (spouseOfSelf === person2Id) {
+    const person2 = await getPerson(prisma, person2Id);
+    return person2.gender === 'L' ? 'suami' : 'istri';
+  }
+
   const langsung = await hitungRelasiDarah(prisma, person1Id, person2Id);
   if (langsung.tipe === 'diri_sendiri') return 'diri sendiri';
   if (langsung.tipe === 'istilah') return langsung.istilah;

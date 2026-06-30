@@ -17,6 +17,18 @@ export default function TreeViewPage() {
   const [loading, setLoading] = useState(true);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
+  // "Lihat dari sudut pandang siapa" -- pengganti SEMENTARA utk
+  // session/login asli (JWT middleware belum ada, lihat backlog #4).
+  // Dipilih manual dari dropdown supaya panggilan ("kamu manggil dia
+  // apa") bisa ditampilkan di preview card. Begitu auth beneran ada,
+  // ini HARUS diganti baca dari session.personId, bukan dropdown bebas
+  // -- dropdown bebas berarti siapapun bisa "menyamar" jadi orang lain
+  // di tampilan (read-only, tidak mengubah data, tapi tetap bukan
+  // perilaku yang benar utk versi production).
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const [panggilanMap, setPanggilanMap] = useState<Record<string, string>>({});
+  const [panggilanLoading, setPanggilanLoading] = useState(false);
+
   // Posisi custom dari drag -- HANYA di memori browser (sengaja belum
   // disimpan ke database, belum ada kolom utk itu di skema). Reset
   // setiap reload halaman. Kalau nanti mau permanen, perlu kolom
@@ -35,6 +47,21 @@ export default function TreeViewPage() {
         setLoading(false);
       });
   }, []);
+
+  // Hitung SEMUA panggilan dari viewer sekali setiap viewer berganti --
+  // BUKAN dipanggil ulang tiap hover. Lihat catatan performa di
+  // app/api/panggilan/[fromId]/route.ts.
+  useEffect(() => {
+    if (!viewerId) {
+      setPanggilanMap({});
+      return;
+    }
+    setPanggilanLoading(true);
+    fetch(`/api/panggilan/${viewerId}`)
+      .then((r) => r.json())
+      .then((data) => setPanggilanMap(data))
+      .finally(() => setPanggilanLoading(false));
+  }, [viewerId]);
 
   const handlePointerDown = useCallback(
     (e: React.MouseEvent, id: string) => {
@@ -162,22 +189,45 @@ export default function TreeViewPage() {
             halaman (belum ada tempat di database utk menyimpan posisi custom).
           </p>
         </div>
-        {Object.keys(offsets).length > 0 && (
-          <button
-            onClick={() => setOffsets({})}
-            style={{
-              fontSize: 12,
-              background: 'transparent',
-              border: '1px solid var(--color-line)',
-              borderRadius: 6,
-              padding: '6px 12px',
-              color: 'var(--color-moss)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            ↺ Reset posisi
-          </button>
-        )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          <label style={{ fontSize: 12, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+            <span style={{ opacity: 0.6 }}>Lihat dari sudut pandang siapa? (sementara, belum ada login)</span>
+            <select
+              value={viewerId ?? ''}
+              onChange={(e) => setViewerId(e.target.value || null)}
+              style={{
+                fontSize: 13,
+                padding: '6px 10px',
+                border: '1px solid var(--color-line)',
+                borderRadius: 6,
+                minWidth: 200,
+              }}
+            >
+              <option value="">— Pilih untuk lihat panggilan —</option>
+              {persons.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.nama}
+                </option>
+              ))}
+            </select>
+          </label>
+          {Object.keys(offsets).length > 0 && (
+            <button
+              onClick={() => setOffsets({})}
+              style={{
+                fontSize: 12,
+                background: 'transparent',
+                border: '1px solid var(--color-line)',
+                borderRadius: 6,
+                padding: '6px 12px',
+                color: 'var(--color-moss)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              ↺ Reset posisi
+            </button>
+          )}
+        </div>
       </header>
 
       <div style={{ overflow: 'auto', padding: 24 }}>
@@ -300,6 +350,71 @@ export default function TreeViewPage() {
               </div>
             );
           })}
+
+          {/* Preview card on hover -- foto (placeholder kalau belum ada),
+              nama, dan panggilan relatif ke viewer yang dipilih di atas.
+              TIDAK ditampilkan saat drag aktif, supaya tidak menutupi
+              kartu yang sedang digeser. */}
+          {hoveredId && !draggingId && (() => {
+            const n = nodeById.get(hoveredId);
+            if (!n) return null;
+            const pos = px(n);
+            const panggilan = viewerId ? panggilanMap[hoveredId] : null;
+            return (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: pos.x,
+                  top: pos.y - CARD_H / 2 - 12,
+                  transform: 'translate(-50%, -100%)',
+                  background: 'white',
+                  border: '1px solid var(--color-line)',
+                  borderRadius: 10,
+                  boxShadow: '0 8px 24px rgba(43,38,32,0.18)',
+                  padding: '10px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  pointerEvents: 'none', // jangan ganggu mouse event kartu di bawahnya
+                  zIndex: 30,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: '50%',
+                    overflow: 'hidden',
+                    background: n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)',
+                    opacity: n.fotoUrl ? 1 : 0.25,
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'white',
+                    fontSize: 14,
+                    fontWeight: 700,
+                  }}
+                >
+                  {n.fotoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={n.fotoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    n.nama.charAt(0).toUpperCase()
+                  )}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: 14, fontWeight: 700 }}>{n.nama}</span>
+                  {viewerId && (
+                    <span style={{ fontSize: 12, opacity: 0.6 }}>
+                      {panggilanLoading ? 'menghitung panggilan...' : panggilan ?? '—'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     </main>

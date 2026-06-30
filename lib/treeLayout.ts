@@ -23,6 +23,7 @@ export type PersonRow = {
   urutanKelahiran: number;
   bapakId: string | null;
   ibuId: string | null;
+  fotoUrl?: string | null;
 };
 
 export type SpouseRow = {
@@ -38,6 +39,7 @@ export type LayoutNode = {
   generation: number;
   x: number;
   isMarriedIn: boolean; // true = tidak punya data ortu, posisi nempel ke pasangan
+  fotoUrl: string | null;
 };
 
 export type LayoutEdge = { fromId: string; toId: string };
@@ -341,6 +343,7 @@ export function computeLayout(persons: PersonRow[], spouses: SpouseRow[]): Layou
       generation: generation.get(p.id)!,
       x: xPos.get(p.id)!,
       isMarriedIn: displayMarriedIn(p),
+      fotoUrl: p.fotoUrl ?? null,
     }));
 
   const maxGeneration = nodes.reduce((m, n) => Math.max(m, n.generation), 0);
