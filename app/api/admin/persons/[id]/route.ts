@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { requireAuth, requireAdmin, isAdminFor } from '@/lib/auth';
 
-// GET: detail 1 person, termasuk bapakId/ibuId saat ini -- dipakai
-// utk prefill form edit.
+// GET: semua member yang login boleh lihat detail person
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await requireAuth(); } catch (e) { return e as Response; }
   const { id } = params;
   const person = await prisma.person.findUnique({
     where: { id },
@@ -52,11 +53,15 @@ async function adalahKeturunan(personId: string, calonOrtuId: string): Promise<b
   return false;
 }
 
-// PUT: update data dasar + relink bapak/ibu. Relink dilakukan dengan
-// hapus dulu parentChild lama (sbg parent dari person ini), lalu buat
-// ulang sesuai input baru -- lebih sederhana & aman daripada diff manual.
+// PUT: admin global ATAU admin cabang yang scope-nya mencakup person ini
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+  let session: Awaited<ReturnType<typeof requireAuth>>;
+  try { session = await requireAuth(); } catch (e) { return e as Response; }
   const { id } = params;
+  const allowed = session.role === 'admin' || await isAdminFor(session.sub, id);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Akses ditolak: kamu bukan admin untuk node ini.' }, { status: 403 });
+  }
   const body = await req.json();
   const { nama, gender, urutanKelahiran, tanggalLahir, bapakId, ibuId, tipe, catatan } = body;
 
@@ -133,9 +138,9 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   }
 }
 
-// DELETE: soft delete saja (set deleted_at), SESUAI keputusan desain
-// sebelumnya -- data person tidak boleh hilang permanen lewat jalur ini.
+// DELETE: hanya super admin yang bisa hapus person (soft delete)
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await requireAdmin(); } catch (e) { return e as Response; }
   const { id } = params;
 
   // Cek dulu apakah person ini punya anak -- kalau ya, jangan hapus

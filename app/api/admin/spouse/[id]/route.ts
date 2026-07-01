@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { requireAdmin } from '@/lib/auth';
 
-// DELETE relasi spouse. BEDA dengan person -- ini hard delete, bukan
-// soft delete, karena relasi pernikahan yang salah input tidak ada
-// nilai historisnya utk disimpan (beda dgn data orang).
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await requireAdmin(); } catch (e) { return e as Response; }
   const { id } = params;
   await prisma.spouse.delete({ where: { id } });
   return NextResponse.json({ ok: true });
 }
 
-// PATCH: ubah status pernikahan (misal dari 'menikah' jadi 'cerai'/'wafat')
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await requireAdmin(); } catch (e) { return e as Response; }
   const { id } = params;
   const { status } = await req.json();
   if (!['menikah', 'cerai', 'wafat'].includes(status)) {

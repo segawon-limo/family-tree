@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 
 export async function GET() {
+  try { await requireAuth(); } catch (e) { return e as Response; }
   const spouses = await prisma.spouse.findMany({
     include: {
       person1: { select: { nama: true } },
@@ -13,6 +15,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  try { await requireAdmin(); } catch (e) { return e as Response; }
   const { person1Id, person2Id, status, tanggalNikah } = await req.json();
   const finalStatus = status || 'menikah';
 

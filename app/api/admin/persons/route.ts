@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 
-// GET: list semua person (yang belum soft-deleted), termasuk nama bapak/ibu
-// untuk ditampilkan di preview tree. TODO ke depan: pagination kalau
-// jumlah anggota sudah ratusan -- untuk sekarang select all cukup aman
-// (skala keluarga, bukan skala publik).
+// GET: semua member yang login boleh lihat daftar person
 export async function GET() {
+  try { await requireAuth(); } catch (e) { return e as Response; }
+
   const persons = await prisma.person.findMany({
     where: { deletedAt: null },
     include: {
@@ -23,7 +23,6 @@ export async function GET() {
     urutanKelahiran: number;
     tanggalLahir: Date | null;
     catatan: string | null;
-    fotoPath: string | null;
     parentsLink: { parent: { id: string; nama: string; gender: string } }[];
   };
 
@@ -37,8 +36,6 @@ export async function GET() {
       urutanKelahiran: p.urutanKelahiran,
       tanggalLahir: p.tanggalLahir,
       catatan: p.catatan,
-      // null = belum upload foto -- frontend tampilkan placeholder
-      fotoUrl: p.fotoPath ? `/api/foto/${p.id}` : null,
       bapakId: bapak?.id ?? null,
       bapakNama: bapak?.nama ?? null,
       ibuId: ibu?.id ?? null,
@@ -49,12 +46,9 @@ export async function GET() {
   return NextResponse.json(shaped);
 }
 
-// POST: buat person baru + relasi ortu (bapak/ibu) kalau diisi.
-// VALIDASI PENTING: urutan_kelahiran unik per bapak yang sama --
-// ini ditegakkan juga oleh trigger di DB (lihat migration 003),
-// tapi kita cek dulu di sini supaya error message lebih jelas
-// ke user daripada raw constraint violation dari Postgres.
+// POST: hanya admin yang boleh tambah person baru
 export async function POST(req: NextRequest) {
+  try { await requireAdmin(); } catch (e) { return e as Response; }
   const body = await req.json();
   const { nama, gender, urutanKelahiran, tanggalLahir, bapakId, ibuId, tipe, catatan } = body;
 

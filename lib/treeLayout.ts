@@ -62,12 +62,35 @@ export function computeLayout(persons: PersonRow[], spouses: SpouseRow[]): Layou
 
   // spouseMap: pasangan AKTIF diutamakan, fallback wafat, cerai diabaikan
   // (konsisten dgn keputusan getSpouseOf di lib/familyCalc.ts)
+  // CATATAN: spouseMap ini SATU-ke-SATU (1 partner per id) dan dipakai
+  // di SELURUH logika anchor/generasi/coupleMidX di bawah -- itu tetap
+  // dipertahankan apa adanya karena redesign penuh ke struktur N-ke-N
+  // di semua tempat itu scope yang jauh lebih besar dari yang dibutuhkan
+  // sekarang. spouseMap di sini cuma menentukan SATU partner "utama"
+  // (utk anchor-decision, coupleMidX, dll).
   const spouseMap = new Map<string, string>();
   const sorted = [...spouses].sort((a) => (a.status === 'menikah' ? -1 : 1));
   for (const s of sorted) {
     if (s.status === 'cerai') continue;
     if (!spouseMap.has(s.person1Id)) spouseMap.set(s.person1Id, s.person2Id);
     if (!spouseMap.has(s.person2Id)) spouseMap.set(s.person2Id, s.person1Id);
+  }
+
+  // allSpousesOf: BERBEDA dari spouseMap -- ini SEMUA pasangan tercatat
+  // per orang (poligami berurutan: bisa >1, mis. istri pertama wafat lalu
+  // menikah lagi -- lihat PROJECT_SUMMARY). Dipakai KHUSUS utk reservasi
+  // lebar & penempatan posisi married-in supaya >1 pasangan TIDAK
+  // tumpang-tindih di titik x yang sama (bug nyata yang ditemukan user:
+  // Abu Nangin py 2 istri, keduanya dapat offset +0.87 yang SAMA dari
+  // spouseMap lama). Urutan: 'menikah' (aktif) duluan, baru 'wafat'/lainnya,
+  // supaya pasangan aktif konsisten ada di slot terdekat dgn anchor.
+  const allSpousesOf = new Map<string, string[]>();
+  for (const s of sorted) {
+    if (s.status === 'cerai') continue;
+    if (!allSpousesOf.has(s.person1Id)) allSpousesOf.set(s.person1Id, []);
+    if (!allSpousesOf.get(s.person1Id)!.includes(s.person2Id)) allSpousesOf.get(s.person1Id)!.push(s.person2Id);
+    if (!allSpousesOf.has(s.person2Id)) allSpousesOf.set(s.person2Id, []);
+    if (!allSpousesOf.get(s.person2Id)!.includes(s.person1Id)) allSpousesOf.get(s.person2Id)!.push(s.person1Id);
   }
 
   const childrenMap = new Map<string, PersonRow[]>();
@@ -190,7 +213,10 @@ export function computeLayout(persons: PersonRow[], spouses: SpouseRow[]): Layou
     const partnerId = spouseMap.get(id);
     if (partnerId) {
       if (marriedInIds.has(partnerId)) {
-        width += 1; // reservasi pasangan married-in sederhana (snap +0.87)
+        // Reservasi sebanyak JUMLAH pasangan married-in yg nempel ke id ini
+        // (poligami: bisa >1), bukan selalu 1. Lihat allSpousesOf di atas.
+        const marriedInCount = (allSpousesOf.get(id) ?? []).filter((sid) => marriedInIds.has(sid)).length;
+        width += Math.max(1, marriedInCount);
       } else if (deferredAnchorIds.has(partnerId)) {
         // reservasi PENUH lebar subtree pasangan yg blood-nya berasal dari
         // sisi lain (Supardi) -- ini yg sebelumnya tidak ada, sebabnya gap jauh
@@ -235,7 +261,8 @@ export function computeLayout(persons: PersonRow[], spouses: SpouseRow[]): Layou
     const partnerId = spouseMap.get(p.id);
     if (partnerId) {
       if (marriedInIds.has(partnerId)) {
-        counter = Math.max(counter, x + 2);
+        const marriedInCount = (allSpousesOf.get(p.id) ?? []).filter((sid) => marriedInIds.has(sid)).length;
+        counter = Math.max(counter, x + 1 + Math.max(1, marriedInCount));
       } else if (deferredAnchorIds.has(partnerId)) {
         counter = Math.max(counter, x + 0.87 + subtreeWidth(partnerId));
       }
@@ -272,14 +299,41 @@ export function computeLayout(persons: PersonRow[], spouses: SpouseRow[]): Layou
   // Offset 0.87 kolom (bukan 0.55 versi awal) -- dgn CARD_W=150 & COL_W=190
   // di tree/page.tsx, 0.55 menyebabkan kartu OVERLAP ~45px (sudah terbukti
   // di screenshot user). 0.87 kolom = beri jarak antar tepi kartu ~16px.
+  //
+  // POLIGAMI FIX: kalau satu anchor punya >1 pasangan married-in (mis.
+  // istri pertama wafat, menikah lagi -- lihat PROJECT_SUMMARY), SEMUA
+  // pasangan itu sebelumnya dapat offset +0.87 yang SAMA dari spouseMap
+  // (1 partner per id), jadi tumpang-tindih persis di titik x yang sama.
+  // Bug nyata, ditemukan dari screenshot user (Abu Nangin, 2 istri).
+  // Fix: kelompokkan per anchor via allSpousesOf, urutkan (menikah/aktif
+  // duluan -- sudah terjamin lewat urutan `sorted` di atas), lalu beri
+  // offset BERTAMBAH (0.87, 1.74, 2.61, ...) per pasangan married-in.
   const MARRIED_IN_OFFSET = 0.87;
   const spouseEdges: LayoutEdge[] = [];
+  const positionedMarriedIn = new Set<string>();
+  for (const [anchorId, partnerIds] of allSpousesOf) {
+    if (marriedInIds.has(anchorId)) continue; // anchorId di sini harus non-married-in
+    if (!generation.has(anchorId)) continue; // anchor belum punya posisi (data tidak lengkap)
+
+    const marriedInPartners = partnerIds.filter((pid) => marriedInIds.has(pid) && !positionedMarriedIn.has(pid));
+    marriedInPartners.forEach((pid, idx) => {
+      generation.set(pid, generation.get(anchorId)!);
+      xPos.set(pid, xPos.get(anchorId)! + MARRIED_IN_OFFSET * (idx + 1));
+      spouseEdges.push({ fromId: anchorId, toId: pid });
+      positionedMarriedIn.add(pid);
+    });
+  }
+  // Jaring pengaman: married-in yg anchornya somehow tidak muncul di
+  // allSpousesOf iteration di atas (seharusnya tidak terjadi, tapi jaga2
+  // drpd kartu hilang total dari render kalau ada data edge-case).
   for (const id of marriedInIds) {
+    if (positionedMarriedIn.has(id)) continue;
     const partnerId = spouseMap.get(id);
-    if (!partnerId || !generation.has(partnerId)) continue; // pasangan tidak ada posisi (data tidak lengkap)
+    if (!partnerId || !generation.has(partnerId)) continue;
     generation.set(id, generation.get(partnerId)!);
     xPos.set(id, xPos.get(partnerId)! + MARRIED_IN_OFFSET);
     spouseEdges.push({ fromId: partnerId, toId: id });
+    positionedMarriedIn.add(id);
   }
 
   // Spouse edge utk pasangan yang KEDUANYA sudah punya posisi lewat
