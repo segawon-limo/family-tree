@@ -34,6 +34,9 @@ model User {
   klaimReviewed    KlaimRequest[]  @relation("ReviewerKlaim")
   auditLogs        AuditLog[]
   personCreated    Person[]        @relation("CreatedByUser")
+  registerInquiriesResolved RegisterInquiry[]
+  changeRequestsMade     ChangeRequest[] @relation("ChangeRequestUser")
+  changeRequestsReviewed ChangeRequest[] @relation("ChangeRequestReviewer")
 
   @@map("users")
 }
@@ -47,7 +50,6 @@ model Person {
   urutanKelahiran  Int      @map("urutan_kelahiran")
   statusKlaim      String   @default("unclaimed") @map("status_klaim")
   catatan          String?
-  fotoPath         String?  @map("foto_path")
   createdById      String?  @map("created_by")
   createdBy        User?    @relation("CreatedByUser", fields: [createdById], references: [id])
   createdAt        DateTime @default(now()) @map("created_at")
@@ -69,6 +71,7 @@ model Person {
   adminScopeRoot   AdminScope[]
   passwordTokens   PasswordSetupToken[]
   auditTargets     AuditLog[]
+  changeRequests   ChangeRequest[]
 
   @@map("person")
 }
@@ -136,16 +139,19 @@ model KodeKeluarga {
 }
 
 model KlaimRequest {
-  id           String    @id @default(uuid())
-  userId       String    @map("user_id")
-  personId     String    @map("person_id")
-  user         User      @relation("UserKlaim", fields: [userId], references: [id])
-  person       Person    @relation(fields: [personId], references: [id])
-  status       String    @default("pending") // pending | approved | rejected
-  requestedAt  DateTime  @default(now()) @map("requested_at")
-  reviewedById String?   @map("reviewed_by")
-  reviewedBy   User?     @relation("ReviewerKlaim", fields: [reviewedById], references: [id])
-  reviewedAt   DateTime? @map("reviewed_at")
+  id                String  @id @default(uuid())
+  userId            String  @map("user_id")
+  personId          String  @map("person_id")
+  user              User    @relation("UserKlaim", fields: [userId], references: [id])
+  person            Person  @relation(fields: [personId], references: [id])
+  status            String  @default("pending")
+  email             String?
+  noHp              String? @map("no_hp")
+  catatanPenolakan  String? @map("catatan_penolakan")
+  requestedAt       DateTime  @default(now()) @map("requested_at")
+  reviewedById      String?   @map("reviewed_by")
+  reviewedBy        User?     @relation("ReviewerKlaim", fields: [reviewedById], references: [id])
+  reviewedAt        DateTime? @map("reviewed_at")
 
   passwordTokens PasswordSetupToken[]
 
@@ -176,6 +182,40 @@ model PasswordSetupToken {
   createdAt       DateTime     @default(now()) @map("created_at")
 
   @@map("password_setup_token")
+}
+
+model RegisterInquiry {
+  id          String    @id @default(uuid())
+  namaDicari  String    @map("nama_dicari")
+  email       String
+  noHp        String?   @map("no_hp")
+  catatan     String?
+  status      String    @default("open")  // open | resolved
+  resolvedById String?  @map("resolved_by")
+  resolvedBy  User?     @relation(fields: [resolvedById], references: [id])
+  resolvedAt  DateTime? @map("resolved_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("register_inquiry")
+}
+
+model ChangeRequest {
+  id           String    @id @default(uuid())
+  personId     String    @map("person_id")
+  person       Person    @relation(fields: [personId], references: [id])
+  requestedById String   @map("requested_by")
+  requestedBy  User      @relation("ChangeRequestUser", fields: [requestedById], references: [id])
+  fieldName    String    @map("field_name")
+  oldValue     String?   @map("old_value")
+  newValue     String    @map("new_value")
+  catatan      String?
+  status       String    @default("pending")
+  reviewedById String?   @map("reviewed_by")
+  reviewedBy   User?     @relation("ChangeRequestReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime? @map("reviewed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@map("change_request")
 }
 
 model AuditLog {

@@ -15,7 +15,6 @@ type PersonRow = {
   bapakNama: string | null;
   ibuId: string | null;
   ibuNama: string | null;
-  fotoUrl: string | null;
 };
 
 type SpouseRow = {
@@ -65,9 +64,6 @@ export default function AdminPage() {
   const [spouseSubmitting, setSpouseSubmitting] = useState(false);
   const [spouseMessage, setSpouseMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
 
-  const [photoUploading, setPhotoUploading] = useState(false);
-  const [photoMessage, setPhotoMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
-
   const loadAll = useCallback(async () => {
     setLoading(true);
     const [pRes, sRes] = await Promise.all([fetch('/api/admin/persons'), fetch('/api/admin/spouse')]);
@@ -110,43 +106,6 @@ export default function AdminPage() {
     // kemudahan: pra-isi Pasangan 1 dgn org yg sedang diedit, supaya
     // alur "edit org -> langsung tambah pasangannya" tidak perlu cari ulang
     setSpouseForm((f) => ({ ...f, person1Id: id }));
-    setPhotoMessage(null);
-  }
-
-  async function handlePhotoUpload(file: File) {
-    if (!editingId) return;
-    setPhotoUploading(true);
-    setPhotoMessage(null);
-    try {
-      const body = new FormData();
-      body.append('foto', file);
-      const res = await fetch(`/api/admin/persons/${editingId}/foto`, { method: 'POST', body });
-      const data = await res.json();
-      if (!res.ok) {
-        setPhotoMessage({ type: 'error', text: data.error || 'Gagal upload foto.' });
-        return;
-      }
-      setPhotoMessage({ type: 'ok', text: 'Foto berhasil diupload.' });
-      loadAll();
-    } catch {
-      setPhotoMessage({ type: 'error', text: 'Terjadi kesalahan jaringan.' });
-    } finally {
-      setPhotoUploading(false);
-    }
-  }
-
-  async function handlePhotoDelete() {
-    if (!editingId) return;
-    if (!confirm('Hapus foto profil ini?')) return;
-    setPhotoUploading(true);
-    setPhotoMessage(null);
-    try {
-      await fetch(`/api/admin/persons/${editingId}/foto`, { method: 'DELETE' });
-      setPhotoMessage({ type: 'ok', text: 'Foto dihapus.' });
-      loadAll();
-    } finally {
-      setPhotoUploading(false);
-    }
   }
 
   async function handleSpouseSubmit(e: React.FormEvent) {
@@ -206,7 +165,6 @@ export default function AdminPage() {
     setEditingId(null);
     setForm(emptyForm);
     setMessage(null);
-    setPhotoMessage(null);
   }
 
   async function handleDelete() {
@@ -250,20 +208,8 @@ export default function AdminPage() {
         setMessage({ type: 'error', text: data.error || 'Gagal menyimpan.' });
         return;
       }
-      setMessage({
-        type: 'ok',
-        text: editingId
-          ? `"${form.nama}" berhasil diupdate.`
-          : `"${form.nama}" berhasil ditambahkan. Sekarang kamu bisa upload foto profilnya di bawah.`,
-      });
-      if (!editingId) {
-        // Pindah ke mode edit utk orang yg baru dibuat -- supaya upload
-        // foto bisa langsung dilakukan tanpa harus cari lagi di preview
-        // tree. Form TIDAK direset, sengaja, biar konsisten dgn data
-        // yang baru tersimpan.
-        setEditingId(data.id);
-        setSpouseForm((f) => ({ ...f, person1Id: data.id }));
-      }
+      setMessage({ type: 'ok', text: editingId ? `"${form.nama}" berhasil diupdate.` : `"${form.nama}" berhasil ditambahkan.` });
+      if (!editingId) setForm(emptyForm);
       loadAll();
     } catch (err) {
       setMessage({ type: 'error', text: 'Terjadi kesalahan jaringan.' });
@@ -286,9 +232,12 @@ export default function AdminPage() {
           Bangun struktur tree di sini dulu. Halaman ini cuma untuk admin input data dasar —
           tampilan tree yang lebih visual akan dibangun terpisah.
         </p>
-        <p style={{ margin: '8px 0 0' }}>
+        <p style={{ margin: '8px 0 0', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           <a href="#pasangan" style={{ color: 'var(--color-terracotta)', fontSize: 13 }}>
             ↓ Kelola relasi pasangan (di bawah, satu halaman ini)
+          </a>
+          <a href="/admin/claims" style={{ color: 'var(--color-moss)', fontSize: 13, fontWeight: 600 }}>
+            📋 Klaim & permintaan masuk →
           </a>
         </p>
       </header>
@@ -393,21 +342,6 @@ export default function AdminPage() {
                 placeholder="Misal: anak angkat dari keluarga X"
               />
             </Field>
-
-            {editingId && (
-              <PhotoField
-                fotoUrl={persons.find((p) => p.id === editingId)?.fotoUrl ?? null}
-                uploading={photoUploading}
-                message={photoMessage}
-                onUpload={handlePhotoUpload}
-                onDelete={handlePhotoDelete}
-              />
-            )}
-            {!editingId && (
-              <p style={{ fontSize: 11, opacity: 0.55, margin: '-4px 0 0' }}>
-                Foto profil bisa diupload setelah anggota ini disimpan (perlu ID dulu).
-              </p>
-            )}
 
             {message && (
               <div
@@ -681,111 +615,6 @@ export default function AdminPage() {
         </div>
       </section>
     </main>
-  );
-}
-
-function PhotoField({
-  fotoUrl,
-  uploading,
-  message,
-  onUpload,
-  onDelete,
-}: {
-  fotoUrl: string | null;
-  uploading: boolean;
-  message: { type: 'ok' | 'error'; text: string } | null;
-  onUpload: (file: File) => void;
-  onDelete: () => void;
-}) {
-  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // reset, supaya pilih file yang sama lagi tetap trigger onChange
-    if (!file) return;
-    // Validasi ringan di client (UX cepat) -- validasi SEBENARNYA tetap
-    // di server lewat magic bytes, jangan andalkan ini sebagai keamanan.
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      alert('Hanya file JPG, PNG, atau WEBP.');
-      return;
-    }
-    if (file.size > 3 * 1024 * 1024) {
-      alert('Ukuran file maksimal 3MB.');
-      return;
-    }
-    onUpload(file);
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ fontSize: 13, fontWeight: 600 }}>Foto Profil (opsional)</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: '50%',
-            overflow: 'hidden',
-            background: '#eee',
-            border: '1px solid var(--color-line)',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {fotoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={fotoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            <span style={{ fontSize: 10, opacity: 0.4 }}>Belum ada</span>
-          )}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label
-            style={{
-              fontSize: 12,
-              padding: '6px 10px',
-              border: '1px solid var(--color-line)',
-              borderRadius: 6,
-              cursor: uploading ? 'default' : 'pointer',
-              opacity: uploading ? 0.6 : 1,
-              textAlign: 'center',
-            }}
-          >
-            {uploading ? 'Mengupload...' : fotoUrl ? 'Ganti foto' : 'Upload foto'}
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={handleChange}
-              disabled={uploading}
-              style={{ display: 'none' }}
-            />
-          </label>
-          {fotoUrl && (
-            <button
-              type="button"
-              onClick={onDelete}
-              disabled={uploading}
-              style={{
-                fontSize: 11,
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--color-danger)',
-                cursor: 'pointer',
-                padding: 0,
-                textAlign: 'left',
-              }}
-            >
-              Hapus foto
-            </button>
-          )}
-        </div>
-      </div>
-      {message && (
-        <span style={{ fontSize: 11, color: message.type === 'ok' ? 'var(--color-moss)' : 'var(--color-danger)' }}>
-          {message.text}
-        </span>
-      )}
-    </div>
   );
 }
 

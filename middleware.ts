@@ -18,8 +18,12 @@ import { verifyToken, COOKIE_NAME } from '@/lib/auth';
 // Route yang TIDAK perlu login -- semua lainnya otomatis dilindungi
 const PUBLIC_PATHS = [
   '/api/auth/login',
-  '/api/auth/logout', // logout boleh dipanggil meski token sudah expired
+  '/api/auth/logout',
+  '/api/auth/register',
+  '/api/auth/setup-password',
   '/login',
+  '/register',
+  '/setup-password',
   '/',
 ];
 
