@@ -4,15 +4,17 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 
 // Serve foto lewat personId, BUKAN lewat nama file mentah di URL --
-// supaya endpoint ini punya satu titik tunggal di mana JWT middleware
-// (backlog #4) nanti bisa nempel cek "apakah user ini boleh lihat foto
-// person ini" sebelum baca file. Kalau langsung serve dari /public,
-// tidak ada titik untuk gating itu sama sekali.
+// supaya endpoint ini punya satu titik tunggal untuk gating akses.
 //
-// BELUM ADA AUTH CHECK DI SINI -- ini TODO yang sama persis dengan
-// semua endpoint admin lain (lihat catatan keamanan project_summary).
-// Jangan anggap foto "kurang sensitif jadi aman diabaikan" -- foto
-// wajah anggota keluarga tetap data pribadi.
+// STATUS AUTH (diperbarui, komentar sebelumnya keliru): endpoint ini
+// SUDAH butuh login (middleware.ts default-deny, path ini tidak ada di
+// PUBLIC_PATHS). Yang BELUM ada: pembatasan "siapa boleh lihat foto
+// siapa" -- siapapun yang sudah login bisa lihat foto anggota LAIN,
+// bukan cuma admin/diri sendiri. Untuk foto profil keluarga yang memang
+// ditujukan buat dilihat sesama anggota, ini kemungkinan acceptable --
+// beda kasus dengan endpoint UPLOAD (lihat route foto POST/DELETE di
+// app/api/admin/persons/[id]/foto/route.ts) yang harus dibatasi ketat
+// karena itu operasi tulis, bukan cuma baca.
 const STORAGE_DIR = path.join(process.cwd(), 'storage', 'foto-profil');
 
 const CONTENT_TYPES: Record<string, string> = {

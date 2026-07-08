@@ -1,17 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { requireAuth, requireAdmin } from '@/lib/auth';
+import { requireAuth, requireAdmin, getScopedPersonIds } from '@/lib/auth';
 
-// GET: semua member yang login boleh lihat daftar person
-export async function GET() {
-  try { await requireAuth(); } catch (e) { return e as Response; }
+// GET: semua member yang login boleh lihat daftar person (dipakai search
+// di register & kalkulator panggilan -- HARUS tetap unrestricted untuk
+// mereka, termasuk kalau yang login kebetulan admin/sub-admin).
+//
+// Query param ?forAdminManagement=1 -- SENGAJA opt-in eksplisit, BUKAN
+// otomatis dari role -- supaya scoping cuma berlaku saat dipanggil dari
+// halaman /admin (manajemen data), bukan dari /register atau /panggilan
+// yang butuh lihat SEMUA orang termasuk kalau viewer-nya sub-admin.
+// Kalau param ini tidak dikirim, behavior 100% sama seperti sebelumnya.
+export async function GET(req: NextRequest) {
+  const forAdminManagement = req.nextUrl.searchParams.get('forAdminManagement') === '1';
+
+  let scopedIds: string[] | null = null;
+  if (forAdminManagement) {
+    try { await requireAdmin(); } catch (e) { return e as Response; }
+    const session = await requireAuth(); // aman dipanggil 2x, requireAdmin sudah lolos
+    scopedIds = await getScopedPersonIds(session.sub);
+  } else {
+    try { await requireAuth(); } catch (e) { return e as Response; }
+  }
 
   const persons = await prisma.person.findMany({
-    where: { deletedAt: null },
+    where: {
+      deletedAt: null,
+      // scopedIds === null berarti UNRESTRICTED (super admin, atau bukan
+      // request admin-management sama sekali) -- JANGAN tambahkan filter id
+      // sama sekali dalam kasus ini. scopedIds sebagai array (termasuk
+      // array kosong) berarti FILTER ke id itu persis.
+      ...(scopedIds !== null ? { id: { in: scopedIds } } : {}),
+    },
     include: {
       parentsLink: {
         include: { parent: { select: { id: true, nama: true, gender: true } } },
       },
+      userAccount: { select: { id: true } },
     },
     orderBy: { createdAt: 'asc' },
   });
@@ -24,6 +49,7 @@ export async function GET() {
     tanggalLahir: Date | null;
     catatan: string | null;
     parentsLink: { parent: { id: string; nama: string; gender: string } }[];
+    userAccount: { id: string } | null;
   };
 
   const shaped = (persons as PersonWithParents[]).map((p) => {
@@ -40,6 +66,17 @@ export async function GET() {
       bapakNama: bapak?.nama ?? null,
       ibuId: ibu?.id ?? null,
       ibuNama: ibu?.nama ?? null,
+      // Ditambahkan untuk tombol "Generate link reset password" di admin --
+      // dulu tidak ada cara buat client tahu siapa yang sudah punya akun.
+      // Catatan: ini expose ke SEMUA member login (endpoint ini shared,
+      // bukan admin-only), bukan cuma admin -- info "siapa sudah klaim"
+      // levelnya rendah, sudah semi-terlihat dari border putus-putus di
+      // tree, jadi tidak menambah exposure baru yang berarti.
+      hasAccount: !!p.userAccount,
+      // Dibutuhkan form "kelola sub-admin" -- id User yang terhubung (bukan
+      // cuma boolean hasAccount) supaya bisa langsung dipakai sebagai
+      // userId di POST /api/admin/scopes tanpa endpoint users terpisah.
+      userId: p.userAccount?.id ?? null,
     };
   });
 
@@ -48,7 +85,8 @@ export async function GET() {
 
 // POST: hanya admin yang boleh tambah person baru
 export async function POST(req: NextRequest) {
-  try { await requireAdmin(); } catch (e) { return e as Response; }
+  let session;
+  try { session = await requireAdmin(); } catch (e) { return e as Response; }
   const body = await req.json();
   const { nama, gender, urutanKelahiran, tanggalLahir, bapakId, ibuId, tipe, catatan } = body;
 
@@ -60,6 +98,23 @@ export async function POST(req: NextRequest) {
   }
   if (gender !== 'L' && gender !== 'P') {
     return NextResponse.json({ error: 'Gender harus L atau P.' }, { status: 400 });
+  }
+
+  // Admin dengan scope terbatas cuma boleh nambah person yang terhubung ke
+  // cabangnya sendiri -- minimal salah satu dari bapakId/ibuId harus ada
+  // di dalam scope. Sengaja "salah satu", bukan "keduanya", karena pasangan
+  // yang "menikah masuk" (lihat catatan tree UI) wajar berasal dari luar
+  // scope -- itu bukan pelanggaran, itu memang bagaimana keluarga bekerja.
+  const scopedIds = await getScopedPersonIds(session.sub);
+  if (scopedIds !== null) {
+    const bapakInScope = bapakId && scopedIds.includes(bapakId);
+    const ibuInScope = ibuId && scopedIds.includes(ibuId);
+    if (!bapakInScope && !ibuInScope) {
+      return NextResponse.json(
+        { error: 'Kamu cuma bisa menambahkan anggota yang terhubung ke cabang keluarga yang jadi tanggung jawabmu.' },
+        { status: 403 }
+      );
+    }
   }
 
   if (bapakId) {

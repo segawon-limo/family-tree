@@ -78,11 +78,15 @@ export default function RegisterPage() {
     if (q.trim().length < 2) { setResults([]); return; }
     setSearching(true);
     try {
-      const data = await post({ action: 'search', query: q });
+      const data = await post({ action: 'search', query: q, kode });
       setResults(data.results ?? []);
     } catch { setResults([]); }
     finally { setSearching(false); }
-  }, []);
+  }, [kode]); // PENTING: kode wajib di deps -- tanpa ini closure "beku" di
+              // nilai kode saat render PERTAMA (selalu '', sebelum user
+              // sempat isi apa-apa), gara-gara useCallback([]) nggak pernah
+              // dibuat ulang meski kode berubah. Bug ini bikin search di
+              // step 3 selalu ngirim kode kosong walau step 1 sukses.
 
   useEffect(() => {
     const t = setTimeout(() => doSearch(query), 350);
@@ -93,7 +97,7 @@ export default function RegisterPage() {
     if (!selected) return;
     setError(null); setLoading(true);
     try {
-      await post({ action: 'claim', personId: selected.id, email, noHp });
+      await post({ action: 'claim', personId: selected.id, email, noHp, kode });
       setStep('done');
     } catch (err: any) { setError(err.message); }
     finally { setLoading(false); }
@@ -109,6 +113,7 @@ export default function RegisterPage() {
         email,
         noHp,
         catatan: catatanNotFound,
+        kode,
       });
       setStep('not-found-done');
     } catch (err: any) { setError(err.message); }

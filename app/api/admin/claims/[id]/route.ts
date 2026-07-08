@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { requireAdmin } from '@/lib/auth';
+import { requireAdmin, isAdminFor, getScopedPersonIds } from '@/lib/auth';
 import crypto from 'crypto';
 
 // POST /api/admin/claims/[id]
@@ -23,6 +23,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 }
 
 async function handleInquiry(id: string, adminId: string) {
+  // Konsisten dengan GET /api/admin/claims: inquiry (nama tidak ketemu di
+  // tree) tidak punya personId, jadi tidak bisa diatribusikan ke cabang
+  // manapun -- sengaja dibatasi cuma super admin (unrestricted), bukan
+  // sub-admin manapun, walau dia entah bagaimana tahu id-nya.
+  const scopedIds = await getScopedPersonIds(adminId);
+  if (scopedIds !== null) {
+    return NextResponse.json(
+      { error: 'Cuma admin utama yang bisa menangani permintaan ini.' },
+      { status: 403 }
+    );
+  }
+
   const inquiry = await prisma.registerInquiry.findUnique({ where: { id } });
   if (!inquiry) return NextResponse.json({ error: 'Tidak ditemukan.' }, { status: 404 });
 
@@ -48,6 +60,13 @@ async function handleKlaim(
     return NextResponse.json(
       { error: `Klaim ini sudah ${klaim.status}, tidak bisa diubah lagi.` },
       { status: 409 }
+    );
+  }
+
+  if (!(await isAdminFor(adminId, klaim.personId))) {
+    return NextResponse.json(
+      { error: 'Klaim ini di luar cabang keluarga yang jadi tanggung jawabmu.' },
+      { status: 403 }
     );
   }
 

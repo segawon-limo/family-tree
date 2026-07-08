@@ -6,10 +6,15 @@
  * tidak ada token atau token tidak valid secara kriptografis.
  *
  * Hal yang TIDAK dilakukan di sini (dilakukan di route handler via lib/auth.ts):
- * - Cek role (admin vs member) -- butuh Prisma
- * - Cek admin scope per-node -- butuh Prisma
- * - Cek apakah user masih ada di DB -- butuh Prisma
+ * - Cek admin scope per-node (admin cabang vs admin global) -- butuh Prisma
+ * - Cek apakah user masih ada di DB / belum di-nonaktifkan -- butuh Prisma
  * Kalau semua itu dimasukkan ke sini, Edge Runtime akan crash.
+ *
+ * CATATAN (komentar lama di sini KELIRU): cek role admin vs member TIDAK
+ * butuh Prisma -- role sudah ada di dalam JWT payload (`payload.role`),
+ * didekode di sini tanpa query apapun. requireAdmin() di lib/auth.ts juga
+ * cuma percaya session.role dari token yang sama, tidak query ulang ke DB.
+ * Makanya guard ADMIN_ONLY_PAGES di bawah aman dilakukan di sini.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -21,11 +26,22 @@ const PUBLIC_PATHS = [
   '/api/auth/logout',
   '/api/auth/register',
   '/api/auth/setup-password',
+  '/api/auth/reset-password',
   '/login',
   '/register',
   '/setup-password',
+  '/reset-password',
   '/',
 ];
+
+// Halaman yang butuh role admin, BUKAN cuma login. SENGAJA cuma halaman
+// (/admin, /admin/claims), BUKAN prefix /api/admin/* -- endpoint di bawah
+// /api/admin/ itu CAMPURAN: sebagian memang admin-only (pakai requireAdmin()
+// sendiri di route handler-nya), sebagian sengaja boleh diakses semua member
+// login (misal /api/admin/persons dipakai combobox di halaman kalkulator
+// panggilan & pencarian register -- BUKAN cuma admin). Kalau prefix ini
+// di-block blanket di sini, fitur yang sengaja shared itu ikut rusak.
+const ADMIN_ONLY_PAGES = ['/admin'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -56,6 +72,20 @@ export async function middleware(req: NextRequest) {
     const res = redirectOrUnauthorized(req);
     res.cookies.delete(COOKIE_NAME);
     return res;
+  }
+
+  // Guard tambahan: halaman admin-only butuh role admin, bukan cuma login.
+  // Ini SEBELUMNYA tidak ada -- member yang login bisa buka /admin langsung
+  // dan cuma dapat halaman kosong/gagal fetch (API-nya nolak 403, tapi
+  // halamannya sendiri tidak kasih pesan jelas). Sekarang ditolak di sini,
+  // sebelum halaman sempat di-render sama sekali.
+  const isAdminPage = ADMIN_ONLY_PAGES.some(
+    (p) => pathname === p || pathname.startsWith(p + '/')
+  );
+  if (isAdminPage && payload.role !== 'admin') {
+    const treeUrl = new URL('/tree', req.url);
+    treeUrl.searchParams.set('denied', 'admin-only');
+    return NextResponse.redirect(treeUrl);
   }
 
   // Token valid -- teruskan request, sisipkan user info ke header

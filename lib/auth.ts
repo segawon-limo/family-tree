@@ -176,6 +176,51 @@ export async function isAdminFor(userId: string, targetPersonId: string): Promis
   return false;
 }
 
+/**
+ * Untuk endpoint yang me-LIST banyak orang sekaligus (persons GET, claims
+ * GET) -- beda kebutuhan dari isAdminFor() yang cuma jawab ya/tidak untuk
+ * SATU target. Di sini butuh SELURUH id yang boleh diakses, supaya list-nya
+ * bisa di-filter.
+ *
+ * Return null = TIDAK dibatasi (super admin, tanpa AdminScope row apa pun)
+ *   -- caller harus treat null sebagai "jangan filter apa-apa", BUKAN
+ *      "array kosong = boleh akses semua". Bug gampang lolos di sini kalau
+ *      null disamakan dengan [].
+ * Return string[] = daftar id yang boleh diakses (root + SEMUA descendant-nya,
+ *   gabungan dari semua AdminScope row user ini kalau lebih dari satu).
+ * Return [] (array kosong, BEDA dari null) = admin tapi tidak punya scope
+ *   valid sama sekali (seharusnya tidak terjadi kalau AdminScope selalu
+ *   dibuat dengan benar, tapi dijaga defensif -- lebih aman "tidak boleh
+ *   akses apa-apa" daripada asumsi salah ke arah "akses semua").
+ */
+export async function getScopedPersonIds(userId: string): Promise<string[] | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+  if (!user || user.role !== 'admin') return [];
+
+  const scopes = await prisma.adminScope.findMany({
+    where: { userId },
+    select: { rootPersonId: true },
+  });
+  if (scopes.length === 0) return null; // admin TANPA scope row = super admin, unrestricted
+
+  // BFS TURUN dari tiap root ke semua descendant -- arah kebalikan dari
+  // isAdminFor() yang BFS NAIK dari target ke leluhur.
+  const visited = new Set<string>(scopes.map((s: { rootPersonId: string }) => s.rootPersonId));
+  let frontier = Array.from(visited);
+  while (frontier.length > 0) {
+    const links = await prisma.parentChild.findMany({
+      where: { parentId: { in: frontier } },
+      select: { childId: true },
+    });
+    const nextIds = links
+      .map((l: { childId: string }) => l.childId)
+      .filter((id: string) => !visited.has(id));
+    nextIds.forEach((id: string) => visited.add(id));
+    frontier = nextIds;
+  }
+  return Array.from(visited);
+}
+
 // ============================================================
 // Cookie helper -- set & clear, dipanggil dari login/logout route
 // ============================================================

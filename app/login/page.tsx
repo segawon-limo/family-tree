@@ -180,6 +180,17 @@ export default function LoginPage() {
         >
           Belum punya akun? Hubungi admin keluarga untuk mendaftarkan dirimu.
         </p>
+        <p
+          style={{
+            textAlign: 'center',
+            marginTop: 8,
+            fontSize: 12,
+            opacity: 0.5,
+            color: 'var(--color-ink)',
+          }}
+        >
+          Lupa password? Hubungi admin keluarga untuk minta link reset.
+        </p>
       </div>
     </main>
   );

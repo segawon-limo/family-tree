@@ -15,6 +15,8 @@ type PersonRow = {
   bapakNama: string | null;
   ibuId: string | null;
   ibuNama: string | null;
+  hasAccount: boolean;
+  userId: string | null;
 };
 
 type SpouseRow = {
@@ -66,7 +68,10 @@ export default function AdminPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [pRes, sRes] = await Promise.all([fetch('/api/admin/persons'), fetch('/api/admin/spouse')]);
+    const [pRes, sRes] = await Promise.all([
+      fetch('/api/admin/persons?forAdminManagement=1'),
+      fetch('/api/admin/spouse?forAdminManagement=1'),
+    ]);
     setPersons(await pRes.json());
     setSpouses(await sRes.json());
     setLoading(false);
@@ -86,26 +91,39 @@ export default function AdminPage() {
   async function handleSelectNode(id: string) {
     setMessage(null);
     setEditingId(id);
-    const res = await fetch(`/api/admin/persons/${id}`);
-    if (!res.ok) {
-      setMessage({ type: 'error', text: 'Gagal memuat data untuk diedit.' });
+    try {
+      const res = await fetch(`/api/admin/persons/${id}`);
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        setMessage({ type: 'error', text: errBody?.error ?? `Gagal memuat data untuk diedit (status ${res.status}).` });
+        setEditingId(null);
+        return;
+      }
+      const data = await res.json();
+      setForm({
+        nama: data.nama,
+        gender: data.gender,
+        urutanKelahiran: String(data.urutanKelahiran),
+        tanggalLahir: data.tanggalLahir ? String(data.tanggalLahir).slice(0, 10) : '',
+        bapakId: data.bapakId,
+        ibuId: data.ibuId,
+        tipe: data.tipe || 'kandung',
+        catatan: data.catatan || '',
+      });
+      // kemudahan: pra-isi Pasangan 1 dgn org yg sedang diedit, supaya
+      // alur "edit org -> langsung tambah pasangannya" tidak perlu cari ulang
+      setSpouseForm((f) => ({ ...f, person1Id: id }));
+    } catch (err: any) {
+      // SEBELUMNYA: tidak ada try/catch di sini sama sekali. Kalau fetch
+      // gagal (network error) atau res.json() gagal parse, promise reject
+      // diam-diam (unhandled rejection) -- editingId sudah kadung ke-set
+      // (makanya judul panel jadi "Edit Anggota"), tapi setForm() TIDAK
+      // PERNAH kepanggil, jadi form tetap di nilai kosong awal. Itu bikin
+      // gejala "form kosong pas klik edit" tanpa pesan error apapun.
+      console.error('[handleSelectNode] gagal memuat data person:', err);
+      setMessage({ type: 'error', text: `Terjadi kesalahan saat memuat data: ${err?.message ?? 'unknown error'}` });
       setEditingId(null);
-      return;
     }
-    const data = await res.json();
-    setForm({
-      nama: data.nama,
-      gender: data.gender,
-      urutanKelahiran: String(data.urutanKelahiran),
-      tanggalLahir: data.tanggalLahir ? String(data.tanggalLahir).slice(0, 10) : '',
-      bapakId: data.bapakId,
-      ibuId: data.ibuId,
-      tipe: data.tipe || 'kandung',
-      catatan: data.catatan || '',
-    });
-    // kemudahan: pra-isi Pasangan 1 dgn org yg sedang diedit, supaya
-    // alur "edit org -> langsung tambah pasangannya" tidak perlu cari ulang
-    setSpouseForm((f) => ({ ...f, person1Id: id }));
   }
 
   async function handleSpouseSubmit(e: React.FormEvent) {
@@ -241,6 +259,8 @@ export default function AdminPage() {
           </a>
         </p>
       </header>
+
+      <SubAdminPanel persons={persons} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 28 }}>
         {/* FORM */}
@@ -414,6 +434,10 @@ export default function AdminPage() {
               >
                 Hapus Anggota Ini
               </button>
+            )}
+
+            {editingId && persons.find((p) => p.id === editingId)?.hasAccount && (
+              <ResetPasswordLinkPanel personId={editingId} />
             )}
           </form>
         </section>
@@ -643,3 +667,262 @@ const inputStyle: React.CSSProperties = {
   fontSize: 14,
   width: '100%',
 };
+
+// Panel "Kelola Sub-Admin" -- cuma render isinya kalau viewer adalah
+// super admin (role admin TANPA AdminScope row). Sub-admin (scoped) TIDAK
+// boleh grant/revoke scope orang lain -- endpoint-nya sendiri sudah
+// menolak (403), tapi UI ini juga disembunyikan supaya nggak menampilkan
+// tombol yang bakal gagal kalau dipencet.
+function SubAdminPanel({ persons }: { persons: PersonRow[] }) {
+  const [isSuperAdmin, setIsSuperAdmin] = useState<boolean | null>(null);
+  const [scopes, setScopes] = useState<any[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [selectedRootId, setSelectedRootId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadScopes = useCallback(() => {
+    fetch('/api/admin/scopes')
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setScopes)
+      .catch(() => setScopes([]));
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me) => {
+        const superAdmin = !!me?.isSuperAdmin;
+        setIsSuperAdmin(superAdmin);
+        if (superAdmin) loadScopes();
+      })
+      .catch(() => setIsSuperAdmin(false));
+  }, [loadScopes]);
+
+  if (!isSuperAdmin) return null;
+
+  // Kandidat sub-admin: person yang sudah punya akun (hasAccount) --
+  // logic-nya sama seperti ResetPasswordLinkPanel, orang yang belum pernah
+  // klaim+approved tidak punya User row untuk dijadikan admin.
+  const candidates = persons.filter((p) => p.hasAccount && p.userId);
+
+  async function handleGrant() {
+    if (!selectedUserId || !selectedRootId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/scopes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: selectedUserId, rootPersonId: selectedRootId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? `Gagal (status ${res.status})`);
+      setSelectedUserId(null);
+      setSelectedRootId(null);
+      loadScopes();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRevoke(scopeId: string) {
+    if (!confirm('Cabut akses sub-admin ini? Role admin user ini TIDAK otomatis diturunkan ke member -- itu langkah terpisah kalau memang diinginkan.')) return;
+    await fetch(`/api/admin/scopes/${scopeId}`, { method: 'DELETE' });
+    loadScopes();
+  }
+
+  return (
+    <section
+      style={{
+        marginBottom: 24,
+        padding: '16px 20px',
+        background: 'var(--color-paper-light)',
+        border: '1px solid var(--color-line)',
+        borderRadius: 'var(--radius)',
+      }}
+    >
+      <h3 style={{ margin: '0 0 4px', fontSize: 16 }}>Kelola Sub-Admin</h3>
+      <p style={{ margin: '0 0 12px', fontSize: 12, opacity: 0.65 }}>
+        Sub-admin cuma bisa kelola anggota dalam cabang keluarga yang jadi tanggung jawabnya --
+        keturunan dari root yang dipilih di sini, plus root-nya sendiri. Pasangan yang menikah
+        masuk dari luar cabang tetap bisa dicatat.
+      </p>
+
+      {scopes.length > 0 && (
+        <table style={{ width: '100%', fontSize: 13, marginBottom: 14, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ paddingBottom: 6 }}>Sub-Admin</th>
+              <th style={{ paddingBottom: 6 }}>Cabang (Root)</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {scopes.map((s) => (
+              <tr key={s.id} style={{ borderTop: '1px solid var(--color-line)' }}>
+                <td style={{ padding: '6px 0' }}>{s.user?.email ?? s.user?.noHpLogin ?? s.userId}</td>
+                <td>{s.rootPerson?.nama ?? s.rootPersonId}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button
+                    onClick={() => handleRevoke(s.id)}
+                    style={{
+                      border: 'none', background: 'transparent',
+                      color: 'var(--color-danger)', cursor: 'pointer', fontSize: 12,
+                    }}
+                  >
+                    Cabut
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 200 }}>
+          <label style={{ display: 'block', fontSize: 11, opacity: 0.6, marginBottom: 4 }}>
+            Calon sub-admin (harus sudah punya akun)
+          </label>
+          <PersonCombobox
+            options={candidates.map((p) => ({ id: p.userId as string, label: p.nama }))}
+            value={selectedUserId}
+            onChange={setSelectedUserId}
+            placeholder="Pilih orang..."
+          />
+        </div>
+        <div style={{ minWidth: 200 }}>
+          <label style={{ display: 'block', fontSize: 11, opacity: 0.6, marginBottom: 4 }}>
+            Root cabang keluarga
+          </label>
+          <PersonCombobox
+            options={persons.map((p) => ({ id: p.id, label: p.nama }))}
+            value={selectedRootId}
+            onChange={setSelectedRootId}
+            placeholder="Pilih root..."
+          />
+        </div>
+        <button
+          onClick={handleGrant}
+          disabled={loading || !selectedUserId || !selectedRootId}
+          style={{
+            padding: '8px 16px', background: 'var(--color-moss)', color: 'white',
+            border: 'none', borderRadius: 6, fontSize: 13,
+            cursor: loading ? 'default' : 'pointer',
+          }}
+        >
+          {loading ? 'Menyimpan...' : 'Jadikan Sub-Admin'}
+        </button>
+      </div>
+      {error && <p style={{ fontSize: 12, color: 'var(--color-danger)', marginTop: 8 }}>{error}</p>}
+    </section>
+  );
+}
+
+// Tombol "Generate link reset password" -- cuma muncul untuk person yang
+// sudah punya akun (hasAccount). Link TIDAK dikirim otomatis -- admin
+// copy manual lalu kirim lewat WA sendiri (app belum punya domain buat
+// email produksi).
+function ResetPasswordLinkPanel({ personId }: { personId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ pesanWA: string; linkExpiry: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function handleGenerate() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setCopied(false);
+    try {
+      const res = await fetch(`/api/admin/persons/${personId}/reset-password-link`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? `Gagal (status ${res.status})`);
+      setResult({ pesanWA: data.pesanWA, linkExpiry: data.linkExpiry });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.pesanWA);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Gagal copy ke clipboard -- copy manual dari teks di bawah.');
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: '12px 14px',
+        border: '1px dashed var(--color-line)',
+        borderRadius: 'var(--radius)',
+        background: 'var(--color-paper-light)',
+      }}
+    >
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={loading}
+        style={{
+          padding: '8px 14px',
+          background: 'transparent',
+          border: '1px solid var(--color-moss)',
+          borderRadius: 6,
+          fontSize: 13,
+          color: 'var(--color-moss)',
+          cursor: loading ? 'default' : 'pointer',
+        }}
+      >
+        {loading ? 'Membuat link...' : 'Generate Link Reset Password'}
+      </button>
+
+      {error && (
+        <p style={{ fontSize: 12, color: 'var(--color-danger)', marginTop: 8 }}>{error}</p>
+      )}
+
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 12, opacity: 0.7, margin: '0 0 6px' }}>
+            Berlaku sampai {result.linkExpiry}. Copy pesan di bawah, kirim manual lewat WA:
+          </p>
+          <textarea
+            readOnly
+            value={result.pesanWA}
+            rows={4}
+            style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+            onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+          />
+          <button
+            type="button"
+            onClick={handleCopy}
+            style={{
+              marginTop: 6,
+              padding: '6px 12px',
+              background: copied ? 'var(--color-moss)' : 'var(--color-terracotta)',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            {copied ? 'Tersalin!' : 'Copy Pesan'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

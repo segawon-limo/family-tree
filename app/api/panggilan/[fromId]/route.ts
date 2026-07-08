@@ -12,14 +12,19 @@ import { tentukanPanggilan } from '@/lib/familyCalc';
 // cuma sekali tiap kali "viewer" dipilih/berganti, hasilnya di-cache
 // di state React di frontend.
 //
-// CATATAN PENTING -- bukan keputusan auth yang sebenarnya:
-// fromId di sini didapat dari PILIHAN MANUAL user di dropdown "lihat
-// dari sudut pandang siapa" di halaman /tree, BUKAN dari sesi login
-// (JWT middleware belum ada -- lihat backlog #4). Begitu auth asli
-// jalan, fromId idealnya diambil dari session.personId yang sudah
-// terverifikasi, bukan dari input bebas seperti sekarang. Endpoint ini
-// sendiri juga belum ada auth check sama sekali, sama seperti endpoint
-// admin lain.
+// CATATAN -- diperbarui setelah verifikasi middleware.ts:
+// Endpoint ini SUDAH dilindungi (butuh cookie sesi valid) lewat default-deny
+// di middleware.ts -- '/api/panggilan' tidak ada di PUBLIC_PATHS, jadi
+// request tanpa login akan kena 401 sebelum sampai ke handler ini.
+// Yang BELUM benar: fromId di sini datang dari PILIHAN BEBAS user (dropdown
+// di /tree, atau parameter apapun yang dikirim client), BUKAN dipaksa sama
+// dengan personId di sesi (middleware sudah nyisipin x-user-person-id ke
+// header request, tapi handler ini belum baca itu). Konsekuensinya: siapa
+// pun yang SUDAH login (member biasa, bukan cuma admin) bisa lihat "siapa
+// manggil siapa apa" dari sudut pandang ORANG LAIN, bukan cuma dirinya
+// sendiri. Untuk app keluarga tertutup ini mungkin acceptable (bukan bug
+// yang expose ke publik luar), tapi tetap beda dari "endpoint terbuka
+// tanpa auth" yang ditulis di versi komentar sebelumnya -- itu keliru.
 export async function GET(req: NextRequest, { params }: { params: { fromId: string } }) {
   const { fromId } = params;
 

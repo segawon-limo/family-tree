@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { requireAuth, requireAdmin } from '@/lib/auth';
+import { requireAuth, requireAdmin, getScopedPersonIds } from '@/lib/auth';
 
-export async function GET() {
-  try { await requireAuth(); } catch (e) { return e as Response; }
+// Sama seperti persons GET: dipakai /tree (semua member, unrestricted)
+// DAN /admin (manajemen, harus scoped). ?forAdminManagement=1 opt-in
+// eksplisit supaya /tree tidak ikut kena filter buat sub-admin.
+export async function GET(req: NextRequest) {
+  const forAdminManagement = req.nextUrl.searchParams.get('forAdminManagement') === '1';
+
+  let scopedIds: string[] | null = null;
+  if (forAdminManagement) {
+    try { await requireAdmin(); } catch (e) { return e as Response; }
+    const session = await requireAuth();
+    scopedIds = await getScopedPersonIds(session.sub);
+  } else {
+    try { await requireAuth(); } catch (e) { return e as Response; }
+  }
+
   const spouses = await prisma.spouse.findMany({
+    where: scopedIds !== null
+      ? { OR: [{ person1Id: { in: scopedIds } }, { person2Id: { in: scopedIds } }] }
+      : undefined,
     include: {
       person1: { select: { nama: true } },
       person2: { select: { nama: true } },
@@ -15,7 +31,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  try { await requireAdmin(); } catch (e) { return e as Response; }
+  let session;
+  try { session = await requireAdmin(); } catch (e) { return e as Response; }
   const { person1Id, person2Id, status, tanggalNikah } = await req.json();
   const finalStatus = status || 'menikah';
 
@@ -24,6 +41,21 @@ export async function POST(req: NextRequest) {
   }
   if (person1Id === person2Id) {
     return NextResponse.json({ error: 'Tidak bisa pasangan dengan diri sendiri.' }, { status: 400 });
+  }
+
+  // Sama seperti persons POST: minimal SALAH SATU pasangan harus ada di
+  // scope admin ini -- pasangan yang "menikah masuk" dari luar cabang itu
+  // wajar, bukan pelanggaran.
+  const scopedIds = await getScopedPersonIds(session.sub);
+  if (scopedIds !== null) {
+    const p1InScope = scopedIds.includes(person1Id);
+    const p2InScope = scopedIds.includes(person2Id);
+    if (!p1InScope && !p2InScope) {
+      return NextResponse.json(
+        { error: 'Kamu cuma bisa mencatat relasi pasangan yang terhubung ke cabang keluarga yang jadi tanggung jawabmu.' },
+        { status: 403 }
+      );
+    }
   }
 
   // Validasi: tidak boleh ada 2 pernikahan status 'menikah' (aktif)

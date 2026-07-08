@@ -37,6 +37,7 @@ model User {
   registerInquiriesResolved RegisterInquiry[]
   changeRequestsMade     ChangeRequest[] @relation("ChangeRequestUser")
   changeRequestsReviewed ChangeRequest[] @relation("ChangeRequestReviewer")
+  passwordResetTokens    PasswordResetToken[]
 
   @@map("users")
 }
@@ -50,6 +51,7 @@ model Person {
   urutanKelahiran  Int      @map("urutan_kelahiran")
   statusKlaim      String   @default("unclaimed") @map("status_klaim")
   catatan          String?
+  fotoPath         String?  @map("foto_path")
   createdById      String?  @map("created_by")
   createdBy        User?    @relation("CreatedByUser", fields: [createdById], references: [id])
   createdAt        DateTime @default(now()) @map("created_at")
@@ -70,6 +72,7 @@ model Person {
   klaimRequests    KlaimRequest[]
   adminScopeRoot   AdminScope[]
   passwordTokens   PasswordSetupToken[]
+  passwordResetTokens PasswordResetToken[]
   auditTargets     AuditLog[]
   changeRequests   ChangeRequest[]
 
@@ -182,6 +185,26 @@ model PasswordSetupToken {
   createdAt       DateTime     @default(now()) @map("created_at")
 
   @@map("password_setup_token")
+}
+
+// Terpisah dari PasswordSetupToken (yang terikat ke klaim_request_id --
+// cuma valid untuk alur "set password pertama kali setelah klaim di-approve").
+// Model ini untuk RESET password kapan saja setelah akun ada, tidak
+// terikat ke satu klaim tertentu -- makanya terhubung langsung ke userId.
+// Link-nya didistribusikan MANUAL oleh admin (WA dsb), BUKAN email otomatis
+// -- app ini belum punya domain terverifikasi untuk kirim email produksi.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  personId  String    @map("person_id") // buat tampilin "Halo, [nama]!" di halaman reset
+  user      User      @relation(fields: [userId], references: [id])
+  person    Person    @relation(fields: [personId], references: [id])
+  token     String    @unique
+  expiredAt DateTime  @map("expired_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("password_reset_token")
 }
 
 model RegisterInquiry {
