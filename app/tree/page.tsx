@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { computeLayout, LayoutNode, LayoutEdge, PersonRow, SpouseRow } from '@/lib/treeLayout';
 
 const COL_W = 190;
@@ -9,35 +10,129 @@ const CARD_W = 150;
 const CARD_H = 56;
 const PAD = 80;
 
-type Offset = { dx: number; dy: number };
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 2.5;
+const ZOOM_STEP = 0.2;
+
+const MINIMAP_W = 280;
+const MINIMAP_H = 200;
+
+// PENTING: scale X dan Y HARUS sama (uniform), bukan dihitung terpisah
+// (MINIMAP_W/worldWidth vs MINIMAP_H/worldHeight) -- kalau terpisah,
+// rasio world yang lebar-pendek (tree biasanya jauh lebih lebar dari
+// tinggi) jadi DISTORSI saat digambar di panel minimap yang rasionya
+// beda, bikin kotak viewport (yang sebenarnya landscape mengikuti
+// browser) malah kelihatan portrait/kepanjangan ke atas. Ditemukan dari
+// bug report nyata. `scale` dipakai utk X & Y sekaligus, sisa ruang di
+// salah satu sumbu di-center pakai offsetX/offsetY (letterbox), BUKAN
+// di-stretch.
+function minimapTransform(worldW: number, worldH: number) {
+  const scale = Math.min(MINIMAP_W / worldW, MINIMAP_H / worldH);
+  const offsetX = (MINIMAP_W - worldW * scale) / 2;
+  const offsetY = (MINIMAP_H - worldH * scale) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+type Viewport = { scrollLeft: number; scrollTop: number; clientWidth: number; clientHeight: number };
 
 export default function TreeViewPage() {
+  const router = useRouter();
   const [persons, setPersons] = useState<PersonRow[]>([]);
   const [spouses, setSpouses] = useState<SpouseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
-  // "Lihat dari sudut pandang siapa" -- pengganti SEMENTARA utk
-  // session/login asli (JWT middleware belum ada, lihat backlog #4).
-  // Dipilih manual dari dropdown supaya panggilan ("kamu manggil dia
-  // apa") bisa ditampilkan di preview card. Begitu auth beneran ada,
-  // ini HARUS diganti baca dari session.personId, bukan dropdown bebas
-  // -- dropdown bebas berarti siapapun bisa "menyamar" jadi orang lain
-  // di tampilan (read-only, tidak mengubah data, tapi tetap bukan
-  // perilaku yang benar utk versi production).
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [panggilanMap, setPanggilanMap] = useState<Record<string, string>>({});
   const [panggilanLoading, setPanggilanLoading] = useState(false);
 
-  // Posisi custom dari drag -- HANYA di memori browser (sengaja belum
-  // disimpan ke database, belum ada kolom utk itu di skema). Reset
-  // setiap reload halaman. Kalau nanti mau permanen, perlu kolom
-  // posX/posY custom di tabel person + endpoint PATCH baru.
-  const [offsets, setOffsets] = useState<Record<string, Offset>>({});
-  const dragState = useRef<{ id: string; startX: number; startY: number; baseDx: number; baseDy: number } | null>(
-    null
-  );
-  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  const [viewport, setViewport] = useState<Viewport>({ scrollLeft: 0, scrollTop: 0, clientWidth: 0, clientHeight: 0 });
+  const updateViewport = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setViewport({ scrollLeft: el.scrollLeft, scrollTop: el.scrollTop, clientWidth: el.clientWidth, clientHeight: el.clientHeight });
+  }, []);
+
+  const panState = useRef<{ startX: number; startY: number; startScrollLeft: number; startScrollTop: number } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+
+  function handleBackgroundMouseDown(e: React.MouseEvent) {
+    if (e.target !== e.currentTarget) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    panState.current = { startX: e.clientX, startY: e.clientY, startScrollLeft: el.scrollLeft, startScrollTop: el.scrollTop };
+    setIsPanning(true);
+  }
+
+  useEffect(() => {
+    function handleMove(e: MouseEvent) {
+      if (!panState.current || !scrollRef.current) return;
+      const { startX, startY, startScrollLeft, startScrollTop } = panState.current;
+      scrollRef.current.scrollLeft = startScrollLeft - (e.clientX - startX);
+      scrollRef.current.scrollTop = startScrollTop - (e.clientY - startY);
+    }
+    function handleUp() {
+      panState.current = null;
+      setIsPanning(false);
+    }
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    updateViewport();
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', updateViewport);
+    window.addEventListener('resize', updateViewport);
+    return () => {
+      el.removeEventListener('scroll', updateViewport);
+      window.removeEventListener('resize', updateViewport);
+    };
+  }, [updateViewport, loading]);
+
+  const zoomAt = useCallback((newZoomRaw: number, clientX?: number, clientY?: number) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoomRaw));
+    const oldZoom = zoomRef.current;
+    if (newZoom === oldZoom) return;
+    const rect = el.getBoundingClientRect();
+    const mouseX = clientX !== undefined ? clientX - rect.left : el.clientWidth / 2;
+    const mouseY = clientY !== undefined ? clientY - rect.top : el.clientHeight / 2;
+    const worldX = (el.scrollLeft + mouseX) / oldZoom;
+    const worldY = (el.scrollTop + mouseY) / oldZoom;
+    setZoom(newZoom);
+    requestAnimationFrame(() => {
+      if (!scrollRef.current) return;
+      scrollRef.current.scrollLeft = worldX * newZoom - mouseX;
+      scrollRef.current.scrollTop = worldY * newZoom - mouseY;
+      updateViewport();
+    });
+  }, [updateViewport]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const delta = -e.deltaY * 0.0015;
+      zoomAt(zoomRef.current * (1 + delta), e.clientX, e.clientY);
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [loading, zoomAt]);
 
   useEffect(() => {
     Promise.all([fetch('/api/admin/persons').then((r) => r.json()), fetch('/api/admin/spouse').then((r) => r.json())])
@@ -48,9 +143,6 @@ export default function TreeViewPage() {
       });
   }, []);
 
-  // Hitung SEMUA panggilan dari viewer sekali setiap viewer berganti --
-  // BUKAN dipanggil ulang tiap hover. Lihat catatan performa di
-  // app/api/panggilan/[fromId]/route.ts.
   useEffect(() => {
     if (!viewerId) {
       setPanggilanMap({});
@@ -62,36 +154,6 @@ export default function TreeViewPage() {
       .then((data) => setPanggilanMap(data))
       .finally(() => setPanggilanLoading(false));
   }, [viewerId]);
-
-  const handlePointerDown = useCallback(
-    (e: React.MouseEvent, id: string) => {
-      e.preventDefault();
-      const current = offsets[id] ?? { dx: 0, dy: 0 };
-      dragState.current = { id, startX: e.clientX, startY: e.clientY, baseDx: current.dx, baseDy: current.dy };
-      setDraggingId(id);
-    },
-    [offsets]
-  );
-
-  useEffect(() => {
-    function handleMove(e: MouseEvent) {
-      if (!dragState.current) return;
-      const { id, startX, startY, baseDx, baseDy } = dragState.current;
-      const dx = baseDx + (e.clientX - startX);
-      const dy = baseDy + (e.clientY - startY);
-      setOffsets((prev) => ({ ...prev, [id]: { dx, dy } }));
-    }
-    function handleUp() {
-      dragState.current = null;
-      setDraggingId(null);
-    }
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-  }, []);
 
   if (loading) {
     return (
@@ -111,11 +173,8 @@ export default function TreeViewPage() {
     return { x: PAD + n.x * COL_W + CARD_W / 2, y: PAD + n.generation * ROW_H + CARD_H / 2 };
   }
 
-  // Posisi final = posisi dasar dari layout + offset hasil drag (kalau ada)
   function px(n: LayoutNode) {
-    const base = basePx(n);
-    const off = offsets[n.id];
-    return off ? { x: base.x + off.dx, y: base.y + off.dy } : base;
+    return basePx(n);
   }
 
   function pxById(id: string) {
@@ -123,12 +182,6 @@ export default function TreeViewPage() {
     return n ? px(n) : null;
   }
 
-  // Titik tengah pasangan -- X DAN Y, memperhitungkan offset drag kedua
-  // belah pihak. Sebelumnya cuma hitung X (Y ikut posisi "from" sendiri),
-  // makanya garis ke anak kelihatan "putus" dari garis pasangan begitu
-  // salah satu pasangan digeser secara vertikal -- kuncinya: titik awal
-  // garis cabang harus benar2 di TENGAH garis pasangan (X & Y), bukan
-  // cuma sejajar X dgn Y milik salah satu orang saja.
   function coupleMidPx(id: string): { x: number; y: number } | null {
     if (!(id in layout.coupleMidX)) return null;
     const edge = layout.spouseEdges.find((e) => e.fromId === id || e.toId === id);
@@ -155,6 +208,16 @@ export default function TreeViewPage() {
 
   const highlighted = hoveredId ? relatedIds(hoveredId) : null;
 
+  function navigateMinimapTo(clickX: number, clickY: number) {
+    const el = scrollRef.current;
+    if (!el) return;
+    const { scale, offsetX, offsetY } = minimapTransform(width, height);
+    const worldX = (clickX - offsetX) / scale;
+    const worldY = (clickY - offsetY) / scale;
+    el.scrollLeft = worldX * zoom - el.clientWidth / 2;
+    el.scrollTop = worldY * zoom - el.clientHeight / 2;
+  }
+
   return (
     <main style={{ minHeight: '100vh', background: 'var(--color-paper)' }}>
       <header
@@ -173,8 +236,8 @@ export default function TreeViewPage() {
         <div>
           <h1 style={{ fontSize: 26 }}>Silsilah Keluarga</h1>
           <p style={{ margin: '4px 0 0', opacity: 0.65, fontSize: 13 }}>
-            Arahkan kursor ke nama untuk menyorot garis keturunan & pasangannya. Tarik (drag) kartu
-            untuk atur ulang posisi tampilan.{' '}
+            Arahkan kursor ke nama untuk menyorot garis keturunan & pasangannya. Scroll mouse untuk
+            zoom, klik-tarik area kosong untuk geser pandangan.{' '}
             <a href="/admin" style={{ color: 'var(--color-terracotta)' }}>
               Edit data →
             </a>
@@ -184,9 +247,6 @@ export default function TreeViewPage() {
             <span style={{ color: 'var(--color-female)' }}>pink perempuan</span>). Garis{' '}
             <strong style={{ fontWeight: 600 }}>putus-putus</strong> = menikah masuk (belum/tidak
             punya garis keturunan sendiri di tree ini). Garis penuh = garis darah.
-            <br />
-            Catatan: posisi hasil geser <strong>belum tersimpan permanen</strong> — reset tiap reload
-            halaman (belum ada tempat di database utk menyimpan posisi custom).
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
@@ -211,212 +271,361 @@ export default function TreeViewPage() {
               ))}
             </select>
           </label>
-          {Object.keys(offsets).length > 0 && (
-            <button
-              onClick={() => setOffsets({})}
-              style={{
-                fontSize: 12,
-                background: 'transparent',
-                border: '1px solid var(--color-line)',
-                borderRadius: 6,
-                padding: '6px 12px',
-                color: 'var(--color-moss)',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              ↺ Reset posisi
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button onClick={() => zoomAt(zoom - ZOOM_STEP)} style={zoomBtnStyle} title="Perkecil">
+              −
             </button>
-          )}
+            <button
+              onClick={() => zoomAt(1)}
+              style={{ ...zoomBtnStyle, width: 'auto', padding: '0 10px', fontSize: 12 }}
+              title="Reset zoom"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button onClick={() => zoomAt(zoom + ZOOM_STEP)} style={zoomBtnStyle} title="Perbesar">
+              +
+            </button>
+          </div>
         </div>
       </header>
 
-      <div style={{ overflow: 'auto', padding: 24 }}>
-        <div style={{ position: 'relative', width, height }}>
-          <svg
-            width={width}
-            height={height}
-            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
+      {/* Wrapper relative INI yang jadi acuan posisi minimap (absolute),
+          BUKAN position:fixed ke seluruh browser viewport -- supaya minimap
+          selalu nempel di pojok kiri-bawah AREA CANVAS TREE, ikut geser
+          kalau sidebar collapse/expand (lebar sidebar berubah), bukan
+          diam di titik tetap layar. Ditemukan dari bug report nyata
+          (minimap dulu fixed ke viewport, jadi ketutup/salah posisi kalau
+          sidebar melebar). */}
+      <div style={{ position: 'relative' }}>
+        <div
+          ref={scrollRef}
+          style={{ overflow: 'auto', padding: 24, position: 'relative', height: 'calc(100vh - 130px)' }}
+        >
+        <div style={{ width: width * zoom, height: height * zoom }}>
+          <div
+            onMouseDown={handleBackgroundMouseDown}
+            style={{
+              position: 'relative',
+              width,
+              height,
+              transform: `scale(${zoom})`,
+              transformOrigin: '0 0',
+              cursor: isPanning ? 'grabbing' : 'grab',
+            }}
           >
-            {/* garis generasi (penggaris horizontal halus) */}
-            {Array.from({ length: layout.maxGeneration + 1 }).map((_, gen) => (
-              <line
-                key={`gen-line-${gen}`}
-                x1={20}
-                y1={PAD + gen * ROW_H + CARD_H / 2}
-                x2={width - 20}
-                y2={PAD + gen * ROW_H + CARD_H / 2}
-                stroke="var(--color-line)"
-                strokeWidth={1}
-                strokeDasharray="2 6"
-              />
-            ))}
-
-            {/* garis keturunan: bezier organik, berangkat dari TITIK TENGAH
-                pasangan suami-istri (kalau ada & sejajar), bukan dari salah
-                satu individu saja -- sesuai permintaan revisi */}
-            {layout.parentEdges.map((e, i) => {
-              const from = nodeById.get(e.fromId);
-              const to = nodeById.get(e.toId);
-              if (!from || !to) return null;
-              const p1 = px(from);
-              const p2 = px(to);
-              const mid = coupleMidPx(e.fromId);
-              const startX = mid?.x ?? p1.x;
-              const startY = mid?.y ?? p1.y + CARD_H / 2;
-              const dim = highlighted && (!highlighted.has(e.fromId) || !highlighted.has(e.toId));
-              const midY = (startY + p2.y) / 2;
-              const path = `M ${startX} ${startY} C ${startX} ${midY}, ${p2.x} ${midY}, ${p2.x} ${p2.y - CARD_H / 2}`;
-              return (
-                <path
-                  key={`pe-${i}`}
-                  d={path}
-                  fill="none"
-                  stroke="var(--color-gold)"
-                  strokeWidth={dim ? 1 : 2}
-                  opacity={dim ? 0.25 : 0.9}
+            <svg
+              width={width}
+              height={height}
+              style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
+            >
+              {Array.from({ length: layout.maxGeneration + 1 }).map((_, gen) => (
+                <line
+                  key={`gen-line-${gen}`}
+                  x1={20}
+                  y1={PAD + gen * ROW_H + CARD_H / 2}
+                  x2={width - 20}
+                  y2={PAD + gen * ROW_H + CARD_H / 2}
+                  stroke="var(--color-line)"
+                  strokeWidth={1}
+                  strokeDasharray="2 6"
                 />
-              );
-            })}
+              ))}
 
-            {/* garis pasangan: SOLID & jelas (bukan putus-putus tipis) --
-                ini garis ikatan nikah, beda fungsi dari garis keturunan
-                makanya beda warna (terracotta) & beda bentuk (lurus pendek,
-                bukan lengkung panjang) */}
-            {layout.spouseEdges.map((e, i) => {
-              const from = nodeById.get(e.fromId);
-              const to = nodeById.get(e.toId);
-              if (!from || !to) return null;
-              const p1 = px(from);
-              const p2 = px(to);
-              const dim = highlighted && (!highlighted.has(e.fromId) || !highlighted.has(e.toId));
-              const sameGen = from.generation === to.generation;
-              const d = sameGen
-                ? `M ${p1.x + CARD_W / 2} ${p1.y} L ${p2.x - CARD_W / 2} ${p2.y}`
-                : `M ${p1.x} ${p1.y} Q ${(p1.x + p2.x) / 2} ${(p1.y + p2.y) / 2}, ${p2.x} ${p2.y}`; // beda generasi/subtree independen -- digambar sbg garis putus2 sbg sinyal "lintas tree"
+              {layout.parentEdges.map((e, i) => {
+                const from = nodeById.get(e.fromId);
+                const to = nodeById.get(e.toId);
+                if (!from || !to) return null;
+                const p1 = px(from);
+                const p2 = px(to);
+                const mid = coupleMidPx(e.fromId);
+                const startX = mid?.x ?? p1.x;
+                const startY = mid?.y ?? p1.y + CARD_H / 2;
+                const dim = highlighted && (!highlighted.has(e.fromId) || !highlighted.has(e.toId));
+                const midY = (startY + p2.y) / 2;
+                const path = `M ${startX} ${startY} C ${startX} ${midY}, ${p2.x} ${midY}, ${p2.x} ${p2.y - CARD_H / 2}`;
+                return (
+                  <path
+                    key={`pe-${i}`}
+                    d={path}
+                    fill="none"
+                    stroke="var(--color-gold)"
+                    strokeWidth={dim ? 1 : 2}
+                    opacity={dim ? 0.25 : 0.9}
+                  />
+                );
+              })}
+
+              {layout.spouseEdges.map((e, i) => {
+                const from = nodeById.get(e.fromId);
+                const to = nodeById.get(e.toId);
+                if (!from || !to) return null;
+                const p1 = px(from);
+                const p2 = px(to);
+                const dim = highlighted && (!highlighted.has(e.fromId) || !highlighted.has(e.toId));
+                const sameGen = from.generation === to.generation;
+                const d = sameGen
+                  ? `M ${p1.x + CARD_W / 2} ${p1.y} L ${p2.x - CARD_W / 2} ${p2.y}`
+                  : `M ${p1.x} ${p1.y} Q ${(p1.x + p2.x) / 2} ${(p1.y + p2.y) / 2}, ${p2.x} ${p2.y}`;
+                return (
+                  <path
+                    key={`se-${i}`}
+                    d={d}
+                    fill="none"
+                    stroke="var(--color-terracotta)"
+                    strokeWidth={dim ? 1.5 : 2.5}
+                    strokeDasharray={sameGen ? undefined : '5 4'}
+                    opacity={dim ? 0.25 : 0.95}
+                  />
+                );
+              })}
+            </svg>
+
+            {layout.nodes.map((n) => {
+              const pos = px(n);
+              const dim = highlighted && !highlighted.has(n.id);
               return (
-                <path
-                  key={`se-${i}`}
-                  d={d}
-                  fill="none"
-                  stroke="var(--color-terracotta)"
-                  strokeWidth={dim ? 1.5 : 2.5}
-                  strokeDasharray={sameGen ? undefined : '5 4'}
-                  opacity={dim ? 0.25 : 0.95}
-                />
-              );
-            })}
-          </svg>
-
-          {layout.nodes.map((n) => {
-            const pos = px(n);
-            const dim = highlighted && !highlighted.has(n.id);
-            return (
-              <div
-                key={n.id}
-                onMouseEnter={() => setHoveredId(n.id)}
-                onMouseLeave={() => setHoveredId(null)}
-                onMouseDown={(e) => handlePointerDown(e, n.id)}
-                style={{
-                  position: 'absolute',
-                  left: pos.x - CARD_W / 2,
-                  top: pos.y - CARD_H / 2,
-                  width: CARD_W,
-                  height: CARD_H,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'white',
-                  border: `2px ${n.isMarriedIn ? 'dashed' : 'solid'} ${
-                    n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)'
-                  }`,
-                  borderRadius: 10,
-                  boxShadow: draggingId === n.id ? '0 6px 16px rgba(43,38,32,0.25)' : 'var(--shadow-card)',
-                  cursor: draggingId === n.id ? 'grabbing' : 'grab',
-                  opacity: dim ? 0.35 : 1,
-                  transition: draggingId === n.id ? 'none' : 'opacity 0.15s, transform 0.15s',
-                  transform: hoveredId === n.id && draggingId !== n.id ? 'scale(1.06)' : 'scale(1)',
-                  fontFamily: 'var(--font-display)',
-                  zIndex: draggingId === n.id ? 20 : hoveredId === n.id ? 5 : 1,
-                  userSelect: 'none',
-                }}
-              >
-                <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', lineHeight: 1.2, padding: '0 6px' }}>
-                  {n.nama}
-                </span>
-                {n.isMarriedIn && (
-                  <span style={{ fontSize: 9, opacity: 0.5, fontFamily: 'var(--font-body)' }}>menikah masuk</span>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Preview card on hover -- foto (placeholder kalau belum ada),
-              nama, dan panggilan relatif ke viewer yang dipilih di atas.
-              TIDAK ditampilkan saat drag aktif, supaya tidak menutupi
-              kartu yang sedang digeser. */}
-          {hoveredId && !draggingId && (() => {
-            const n = nodeById.get(hoveredId);
-            if (!n) return null;
-            const pos = px(n);
-            const panggilan = viewerId ? panggilanMap[hoveredId] : null;
-            return (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: pos.x,
-                  top: pos.y - CARD_H / 2 - 12,
-                  transform: 'translate(-50%, -100%)',
-                  background: 'white',
-                  border: '1px solid var(--color-line)',
-                  borderRadius: 10,
-                  boxShadow: '0 8px 24px rgba(43,38,32,0.18)',
-                  padding: '10px 14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  pointerEvents: 'none', // jangan ganggu mouse event kartu di bawahnya
-                  zIndex: 30,
-                  whiteSpace: 'nowrap',
-                }}
-              >
                 <div
+                  key={n.id}
+                  onMouseEnter={() => setHoveredId(n.id)}
+                  onMouseLeave={() => setHoveredId(null)}
+                  onClick={() => router.push(`/person/${n.id}`)}
                   style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: '50%',
-                    overflow: 'hidden',
-                    background: n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)',
-                    opacity: n.fotoUrl ? 1 : 0.25,
-                    flexShrink: 0,
+                    position: 'absolute',
+                    left: pos.x - CARD_W / 2,
+                    top: pos.y - CARD_H / 2,
+                    width: CARD_W,
+                    height: CARD_H,
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    color: 'white',
-                    fontSize: 14,
-                    fontWeight: 700,
+                    background: 'white',
+                    border: `2px ${n.isMarriedIn ? 'dashed' : 'solid'} ${
+                      n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)'
+                    }`,
+                    borderRadius: 10,
+                    boxShadow: 'var(--shadow-card)',
+                    opacity: dim ? 0.35 : 1,
+                    transition: 'opacity 0.15s, transform 0.15s',
+                    transform: hoveredId === n.id ? 'scale(1.06)' : 'scale(1)',
+                    fontFamily: 'var(--font-display)',
+                    zIndex: hoveredId === n.id ? 5 : 1,
+                    cursor: 'pointer',
+                    userSelect: 'none',
                   }}
                 >
-                  {n.fotoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={n.fotoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  ) : (
-                    n.nama.charAt(0).toUpperCase()
+                  <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', lineHeight: 1.2, padding: '0 6px' }}>
+                    {n.nama}
+                  </span>
+                  {n.isMarriedIn && (
+                    <span style={{ fontSize: 9, opacity: 0.5, fontFamily: 'var(--font-body)' }}>menikah masuk</span>
                   )}
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: 14, fontWeight: 700 }}>{n.nama}</span>
-                  {viewerId && (
-                    <span style={{ fontSize: 12, opacity: 0.6 }}>
-                      {panggilanLoading ? 'menghitung panggilan...' : panggilan ?? '—'}
-                    </span>
-                  )}
+              );
+            })}
+
+            {hoveredId && (() => {
+              const n = nodeById.get(hoveredId);
+              if (!n) return null;
+              const pos = px(n);
+              const panggilan = viewerId ? panggilanMap[hoveredId] : null;
+              return (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: pos.x,
+                    top: pos.y - CARD_H / 2 - 12,
+                    transform: 'translate(-50%, -100%)',
+                    background: 'white',
+                    border: '1px solid var(--color-line)',
+                    borderRadius: 10,
+                    boxShadow: '0 8px 24px rgba(43,38,32,0.18)',
+                    padding: '10px 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    pointerEvents: 'none',
+                    zIndex: 30,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: '50%',
+                      overflow: 'hidden',
+                      background: n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)',
+                      opacity: n.fotoUrl ? 1 : 0.25,
+                      flexShrink: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontSize: 14,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {n.fotoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={n.fotoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      n.nama.charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontSize: 14, fontWeight: 700 }}>{n.nama}</span>
+                    {viewerId && (
+                      <span style={{ fontSize: 12, opacity: 0.6 }}>
+                        {panggilanLoading ? 'menghitung panggilan...' : panggilan ?? '—'}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
+          </div>
         </div>
+        </div>
+
+        <Minimap
+          nodes={layout.nodes}
+          px={px}
+          worldWidth={width}
+          worldHeight={height}
+          zoom={zoom}
+          viewport={viewport}
+          onNavigate={navigateMinimapTo}
+        />
       </div>
     </main>
+  );
+}
+
+const zoomBtnStyle: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  border: '1px solid var(--color-line)',
+  borderRadius: 6,
+  background: 'white',
+  fontSize: 16,
+  lineHeight: 1,
+  cursor: 'pointer',
+  color: 'var(--color-ink)',
+};
+
+function Minimap({
+  nodes,
+  px,
+  worldWidth,
+  worldHeight,
+  zoom,
+  viewport,
+  onNavigate,
+}: {
+  nodes: LayoutNode[];
+  px: (n: LayoutNode) => { x: number; y: number };
+  worldWidth: number;
+  worldHeight: number;
+  zoom: number;
+  viewport: Viewport;
+  onNavigate: (x: number, y: number) => void;
+}) {
+  const minimapRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const { scale, offsetX, offsetY } = minimapTransform(worldWidth, worldHeight);
+
+  function handleMouseDown(e: React.MouseEvent) {
+    draggingRef.current = true;
+    const el = minimapRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = Math.min(Math.max(e.clientX - rect.left, 0), MINIMAP_W);
+    const y = Math.min(Math.max(e.clientY - rect.top, 0), MINIMAP_H);
+    onNavigate(x, y);
+  }
+
+  useEffect(() => {
+    function handleMove(e: MouseEvent) {
+      if (!draggingRef.current) return;
+      const el = minimapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const x = Math.min(Math.max(e.clientX - rect.left, 0), MINIMAP_W);
+      const y = Math.min(Math.max(e.clientY - rect.top, 0), MINIMAP_H);
+      onNavigate(x, y);
+    }
+    function handleUp() {
+      draggingRef.current = false;
+    }
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [onNavigate]);
+
+  const visibleWorldX = viewport.scrollLeft / zoom;
+  const visibleWorldY = viewport.scrollTop / zoom;
+  const visibleWorldW = viewport.clientWidth / zoom;
+  const visibleWorldH = viewport.clientHeight / zoom;
+
+  const rectX = visibleWorldX * scale + offsetX;
+  const rectY = visibleWorldY * scale + offsetY;
+  const rectW = Math.min(visibleWorldW * scale, MINIMAP_W);
+  const rectH = Math.min(visibleWorldH * scale, MINIMAP_H);
+
+  return (
+    <div
+      ref={minimapRef}
+      onMouseDown={handleMouseDown}
+      style={{
+        position: 'absolute',
+        left: 20,
+        bottom: 20,
+        width: MINIMAP_W,
+        height: MINIMAP_H,
+        background: 'var(--color-paper-light)',
+        border: '2px solid var(--color-gold)',
+        borderRadius: 8,
+        boxShadow: '0 4px 16px rgba(43,38,32,0.25)',
+        cursor: 'pointer',
+        overflow: 'hidden',
+        zIndex: 40,
+      }}
+      title="Klik atau tarik untuk navigasi"
+    >
+      {nodes.map((n) => {
+        const p = px(n);
+        return (
+          <div
+            key={n.id}
+            style={{
+              position: 'absolute',
+              left: p.x * scale + offsetX - 1.5,
+              top: p.y * scale + offsetY - 1.5,
+              width: 3,
+              height: 3,
+              borderRadius: '50%',
+              background: n.gender === 'L' ? 'var(--color-male)' : 'var(--color-female)',
+            }}
+          />
+        );
+      })}
+      <div
+        style={{
+          position: 'absolute',
+          left: rectX,
+          top: rectY,
+          width: rectW,
+          height: rectH,
+          border: '1.5px solid var(--color-terracotta)',
+          background: 'rgba(200,120,80,0.12)',
+          pointerEvents: 'none',
+        }}
+      />
+    </div>
   );
 }

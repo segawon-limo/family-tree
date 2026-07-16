@@ -270,7 +270,15 @@ function Topbar({ me, pathname }: { me: Me; pathname: string }) {
         borderBottom: '1px solid var(--color-line)',
         position: 'sticky',
         top: 0,
-        zIndex: 10,
+        // Sengaja jauh lebih tinggi dari z-index header di halaman manapun
+        // (mis. app/tree/page.tsx pakai zIndex:10 utk header sticky-nya
+        // sendiri). Dropdown akun ini nested DI DALAM header ini dan
+        // stacking-context-nya z-20, tapi itu cuma menang di DALAM
+        // stacking context header ini -- kalau header ini sendiri cuma
+        // z-10, dia bisa KETUTUP header halaman lain yang render belakangan
+        // di DOM meski z-index dropdown internalnya 20. Ditemukan dari bug
+        // report nyata (dropdown akun ketutup header /tree).
+        zIndex: 100,
       }}
     >
       <h2

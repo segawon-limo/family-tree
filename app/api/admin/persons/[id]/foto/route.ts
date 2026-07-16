@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { writeFile, unlink, mkdir } from 'fs/promises';
+import { writeFile, unlink, mkdir, readFile } from 'fs/promises';
 import path from 'path';
+import { requireAuth, isAdminFor } from '@/lib/auth';
+
+// WAJIB: rute ini pakai requireAuth()/getSession() yang baca cookies().
+// Tanpa baris ini, Next.js mencoba PRERENDER rute ini saat `next build`,
+// dan pola `catch (e) { return e as Response }` di bawah ikut menelan
+// sinyal internal Next.js yang seharusnya bilang "rute ini dynamic,
+// jangan di-prerender" -- akibatnya build gagal dengan error "No response
+// is returned from route handler". Ditemukan dari build error nyata,
+// bukan pencegahan spekulatif -- JANGAN dihapus.
+export const dynamic = 'force-dynamic';
 
 // Folder fisik penyimpanan foto -- DI LUAR `public/`, sengaja. Lihat
 // catatan di db_migrations/migrations/011_person_foto.sql kenapa.
@@ -35,9 +45,20 @@ function detectExt(buf: Buffer): string | null {
 }
 
 // POST: upload/ganti foto profil person. multipart/form-data, field "foto".
+// SEBELUMNYA TIDAK ADA PENGECEKAN AUTH SAMA SEKALI DI SINI -- siapapun,
+// termasuk yang belum login, bisa upload foto ke person manapun kalau
+// tahu id-nya. Ditemukan tidak sengaja saat menambahkan GET handler di
+// file yang sama, bukan laporan terpisah. Sekarang wajib admin (global
+// atau scoped ke node ini), konsisten dengan endpoint admin/persons lain.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
 
+  let session;
+  try { session = await requireAuth(); } catch (e) { return e as Response; }
+  const allowed = session.role === 'admin' || (await isAdminFor(session.sub, id));
+  if (!allowed) {
+    return NextResponse.json({ error: 'Akses ditolak: kamu bukan admin untuk node ini.' }, { status: 403 });
+  }
   const person = await prisma.person.findUnique({ where: { id }, select: { id: true, fotoPath: true } });
   if (!person) return NextResponse.json({ error: 'Person tidak ditemukan' }, { status: 404 });
 
@@ -81,8 +102,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 }
 
 // DELETE: hapus foto profil (kembali ke tanpa foto / placeholder).
+// Sama seperti POST -- sebelumnya tidak ada auth check sama sekali.
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
+
+  let session;
+  try { session = await requireAuth(); } catch (e) { return e as Response; }
+  const allowed = session.role === 'admin' || (await isAdminFor(session.sub, id));
+  if (!allowed) {
+    return NextResponse.json({ error: 'Akses ditolak: kamu bukan admin untuk node ini.' }, { status: 403 });
+  }
+
   const person = await prisma.person.findUnique({ where: { id }, select: { fotoPath: true } });
   if (!person) return NextResponse.json({ error: 'Person tidak ditemukan' }, { status: 404 });
 
@@ -92,4 +122,43 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   }
 
   return NextResponse.json({ ok: true });
+}
+
+// GET: sajikan file foto profil. SEBELUMNYA TIDAK ADA SAMA SEKALI --
+// akibatnya fitur foto profil upload-nya jalan tapi tidak pernah bisa
+// ditampilkan di manapun (tree hover preview, halaman profil, dst).
+// Dibuka untuk SEMUA member login (bukan admin-only) -- ini cuma foto
+// profil yang memang ditujukan utk dilihat seluruh keluarga, konsisten
+// dengan akses data person lain yang juga readable oleh semua member.
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  try {
+    await requireAuth();
+  } catch (e) {
+    return e as Response;
+  }
+
+  const { id } = params;
+  const person = await prisma.person.findUnique({ where: { id }, select: { fotoPath: true } });
+  if (!person?.fotoPath) {
+    return NextResponse.json({ error: 'Tidak ada foto.' }, { status: 404 });
+  }
+
+  try {
+    const buf = await readFile(path.join(STORAGE_DIR, person.fotoPath));
+    const ext = person.fotoPath.split('.').pop();
+    const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    return new NextResponse(buf, {
+      headers: {
+        'Content-Type': contentType,
+        // private (bukan public) -- ini bukan aset publik, harus lewat
+        // auth check di atas tiap kali browser cache-nya expire.
+        'Cache-Control': 'private, max-age=3600',
+      },
+    });
+  } catch {
+    // File di DB ada tapi tidak ketemu di disk (mis. terhapus manual /
+    // storage di-reset tanpa update DB) -- 404 biasa, bukan 500, supaya
+    // frontend bisa fallback ke avatar inisial dengan tenang.
+    return NextResponse.json({ error: 'File foto tidak ditemukan di disk.' }, { status: 404 });
+  }
 }

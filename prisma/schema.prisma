@@ -38,6 +38,7 @@ model User {
   changeRequestsMade     ChangeRequest[] @relation("ChangeRequestUser")
   changeRequestsReviewed ChangeRequest[] @relation("ChangeRequestReviewer")
   passwordResetTokens    PasswordResetToken[]
+  calendarAgenda         CalendarAgenda[]
 
   @@map("users")
 }
@@ -114,6 +115,16 @@ model PersonKontak {
   alamatDomisili  String?  @map("alamat_domisili")
   kota            String?
   pekerjaan       String?
+  // --- Lokasi untuk Map/Globe (lihat 015_person_kontak_lokasi.sql) ---
+  // Granularitas kecamatan/kabupaten, BUKAN alamat lengkap -- keputusan
+  // privasi & akurasi geocoding, jangan diubah jadi input alamat bebas
+  // tanpa diskusi ulang.
+  kecamatan       String?
+  kabupatenKota   String?  @map("kabupaten_kota")
+  provinsi        String?
+  latitude        Float?
+  longitude       Float?
+  geocodedAt      DateTime? @map("geocoded_at")
   updatedAt       DateTime @default(now()) @map("updated_at")
 
   @@map("person_kontak")
@@ -205,6 +216,19 @@ model PasswordResetToken {
   createdAt DateTime  @default(now()) @map("created_at")
 
   @@map("password_reset_token")
+}
+
+model CalendarAgenda {
+  id              String   @id @default(uuid())
+  createdByUserId String   @map("created_by_user_id")
+  createdBy       User     @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  judul           String
+  deskripsi       String?
+  tanggal         DateTime @db.Date
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@map("calendar_agenda")
 }
 
 model RegisterInquiry {

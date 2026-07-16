@@ -14,6 +14,8 @@ export type NavItem = {
 
 export const NAV_ITEMS: NavItem[] = [
   { href: '/tree', label: 'Silsilah', roles: ['admin', 'member'] },
+  { href: '/calendar', label: 'Kalender', roles: ['admin', 'member'] },
+  { href: '/map', label: 'Peta Keluarga', roles: ['admin', 'member'] },
   { href: '/admin', label: 'Kelola Data Keluarga', roles: ['admin'] },
   { href: '/admin/claims', label: 'Klaim Masuk', roles: ['admin'] },
   { href: '/panggilan', label: 'Kalkulator Panggilan', roles: ['admin', 'member'] },

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import PersonCombobox from './components/PersonCombobox';
 import TreePreview from './components/TreePreview';
 
@@ -10,6 +10,7 @@ type PersonRow = {
   gender: string;
   urutanKelahiran: number;
   tanggalLahir: string | null;
+  tanggalWafat: string | null;
   catatan: string | null;
   bapakId: string | null;
   bapakNama: string | null;
@@ -40,6 +41,7 @@ const emptyForm = {
   gender: 'L' as 'L' | 'P',
   urutanKelahiran: '',
   tanggalLahir: '',
+  tanggalWafat: '',
   bapakId: null as string | null,
   ibuId: null as string | null,
   tipe: 'kandung' as 'kandung' | 'angkat',
@@ -105,6 +107,7 @@ export default function AdminPage() {
         gender: data.gender,
         urutanKelahiran: String(data.urutanKelahiran),
         tanggalLahir: data.tanggalLahir ? String(data.tanggalLahir).slice(0, 10) : '',
+        tanggalWafat: data.tanggalWafat ? String(data.tanggalWafat).slice(0, 10) : '',
         bapakId: data.bapakId,
         ibuId: data.ibuId,
         tipe: data.tipe || 'kandung',
@@ -219,6 +222,7 @@ export default function AdminPage() {
           ...form,
           urutanKelahiran: Number(form.urutanKelahiran),
           tanggalLahir: form.tanggalLahir || null,
+          tanggalWafat: form.tanggalWafat || null,
         }),
       });
       const data = await res.json();
@@ -319,6 +323,15 @@ export default function AdminPage() {
                 type="date"
                 value={form.tanggalLahir}
                 onChange={(e) => setForm({ ...form, tanggalLahir: e.target.value })}
+                style={inputStyle}
+              />
+            </Field>
+
+            <Field label="Tanggal wafat (opsional)" hint="Kosongkan kalau masih hidup. Kalau diisi, ulang tahun berhenti ditampilkan di kalender & digantikan peringatan wafat.">
+              <input
+                type="date"
+                value={form.tanggalWafat}
+                onChange={(e) => setForm({ ...form, tanggalWafat: e.target.value })}
                 style={inputStyle}
               />
             </Field>
@@ -439,6 +452,8 @@ export default function AdminPage() {
             {editingId && persons.find((p) => p.id === editingId)?.hasAccount && (
               <ResetPasswordLinkPanel personId={editingId} />
             )}
+
+            {editingId && <LokasiPanel personId={editingId} />}
           </form>
         </section>
 
@@ -921,6 +936,365 @@ function ResetPasswordLinkPanel({ personId }: { personId: string }) {
           >
             {copied ? 'Tersalin!' : 'Copy Pesan'}
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Panel Lokasi -- terpisah dari form utama karena disimpan ke tabel
+// person_kontak lewat endpoint sendiri (/api/admin/persons/[id]/lokasi),
+// bukan lewat handleSubmit person biasa. Granularitas kecamatan/kabupaten
+// SENGAJA, bukan alamat lengkap -- lihat catatan di 015_person_kontak_lokasi.sql
+// soal privasi & akurasi geocoding.
+//
+// Dropdown cascading provinsi -> kabupaten/kota -> kecamatan, didukung
+// dataset statis di /public/wilayah/ (provinces.json, kabupaten/{kode}.json,
+// kecamatan/{kode}.json) -- sumber: cahyadsn/wilayah (MIT), sesuai
+// Kepmendagri terbaru. KETERBATASAN YANG PERLU DISADARI: kalau ada
+// kecamatan hasil pemekaran baru yang belum masuk dataset ini, admin
+// TIDAK BISA memilihnya lewat dropdown -- tidak ada fallback ketik bebas
+// lagi di versi ini. Kalau itu jadi masalah nyata, perlu ditambahkan
+// opsi "kecamatan tidak ada di daftar" terpisah.
+//
+// PENTING: yang disimpan ke DB tetap NAMA (string biasa), bukan kode --
+// skema person_kontak tidak berubah dari sebelumnya. Kode cuma dipakai
+// di sisi client utk cascading fetch, tidak pernah dikirim ke server.
+type WilayahOption = { kode: string; nama: string };
+
+function LokasiPanel({ personId }: { personId: string }) {
+  const [provinsiKode, setProvinsiKode] = useState('');
+  const [provinsiNama, setProvinsiNama] = useState('');
+  const [kabupatenKode, setKabupatenKode] = useState('');
+  const [kabupatenNama, setKabupatenNama] = useState('');
+  const [kecamatanKode, setKecamatanKode] = useState('');
+  const [kecamatanNama, setKecamatanNama] = useState('');
+
+  const [provinsiOptions, setProvinsiOptions] = useState<WilayahOption[]>([]);
+  const [kabupatenOptions, setKabupatenOptions] = useState<WilayahOption[]>([]);
+  const [kecamatanOptions, setKecamatanOptions] = useState<WilayahOption[]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [koordinat, setKoordinat] = useState<{ latitude: number | null; longitude: number | null }>({
+    latitude: null,
+    longitude: null,
+  });
+
+  // Daftar provinsi dimuat sekali saja (38 item, ringan).
+  useEffect(() => {
+    fetch('/wilayah/provinces.json')
+      .then((r) => r.json())
+      .then(setProvinsiOptions)
+      .catch(() => setProvinsiOptions([]));
+  }, []);
+
+  // Muat lokasi tersimpan, LALU reverse-lookup kode-nya lewat nama supaya
+  // dropdown ke-preselect dengan benar saat edit. Kalau nama tersimpan
+  // tidak persis cocok dengan dataset (mis. dulu diketik bebas sebelum
+  // fitur dropdown ini ada), cascading berhenti di level yang gagal cocok
+  // -- nama lama tetap ditampilkan (lihat fallback di render), tapi admin
+  // perlu pilih ulang lewat dropdown utk memperbaikinya.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setStatus(null);
+
+    async function run() {
+      const res = await fetch(`/api/admin/persons/${personId}/lokasi`);
+      const data = await res.json();
+      if (cancelled) return;
+
+      setKoordinat({ latitude: data.latitude ?? null, longitude: data.longitude ?? null });
+      setProvinsiNama(data.provinsi ?? '');
+      setKabupatenNama(data.kabupatenKota ?? '');
+      setKecamatanNama(data.kecamatan ?? '');
+
+      if (data.provinsi) {
+        const provList: WilayahOption[] = await fetch('/wilayah/provinces.json').then((r) => r.json());
+        const provMatch = provList.find((p) => p.nama.toLowerCase() === String(data.provinsi).toLowerCase());
+        if (provMatch && !cancelled) {
+          setProvinsiKode(provMatch.kode);
+          const kabList: WilayahOption[] = await fetch(`/wilayah/kabupaten/${provMatch.kode}.json`)
+            .then((r) => (r.ok ? r.json() : []))
+            .catch(() => []);
+          if (cancelled) return;
+          setKabupatenOptions(kabList);
+
+          if (data.kabupatenKota) {
+            const kabMatch = kabList.find((k) => k.nama.toLowerCase() === String(data.kabupatenKota).toLowerCase());
+            if (kabMatch && !cancelled) {
+              setKabupatenKode(kabMatch.kode);
+              const kecList: WilayahOption[] = await fetch(`/wilayah/kecamatan/${kabMatch.kode}.json`)
+                .then((r) => (r.ok ? r.json() : []))
+                .catch(() => []);
+              if (cancelled) return;
+              setKecamatanOptions(kecList);
+            }
+          }
+        }
+      }
+      if (!cancelled) setLoading(false);
+    }
+
+    run().catch(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [personId]);
+
+  function handleSelectProvinsi(opt: WilayahOption | null) {
+    setProvinsiKode(opt?.kode ?? '');
+    setProvinsiNama(opt?.nama ?? '');
+    // Reset cascade di bawahnya -- kabupaten/kecamatan lama belum tentu
+    // masih relevan kalau provinsinya ganti.
+    setKabupatenKode('');
+    setKabupatenNama('');
+    setKecamatanKode('');
+    setKecamatanNama('');
+    setKabupatenOptions([]);
+    setKecamatanOptions([]);
+    if (opt) {
+      fetch(`/wilayah/kabupaten/${opt.kode}.json`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then(setKabupatenOptions)
+        .catch(() => setKabupatenOptions([]));
+    }
+  }
+
+  function handleSelectKabupaten(opt: WilayahOption | null) {
+    setKabupatenKode(opt?.kode ?? '');
+    setKabupatenNama(opt?.nama ?? '');
+    setKecamatanKode('');
+    setKecamatanNama('');
+    setKecamatanOptions([]);
+    if (opt) {
+      fetch(`/wilayah/kecamatan/${opt.kode}.json`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then(setKecamatanOptions)
+        .catch(() => setKecamatanOptions([]));
+    }
+  }
+
+  function handleSelectKecamatan(opt: WilayahOption | null) {
+    setKecamatanKode(opt?.kode ?? '');
+    setKecamatanNama(opt?.nama ?? '');
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = await fetch(`/api/admin/persons/${personId}/lokasi`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kecamatan: kecamatanNama,
+          kabupatenKota: kabupatenNama,
+          provinsi: provinsiNama,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Gagal menyimpan lokasi.');
+      setKoordinat({ latitude: data.latitude ?? null, longitude: data.longitude ?? null });
+      setStatus({
+        type: data.geocoded ? 'ok' : 'error',
+        text: data.geocoded
+          ? 'Lokasi tersimpan & berhasil ditemukan koordinatnya.'
+          : 'Lokasi tersimpan, TAPI koordinat belum ketemu. Orang ini belum akan muncul di peta.',
+      });
+    } catch (err: any) {
+      setStatus({ type: 'error', text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: '12px 14px',
+        border: '1px dashed var(--color-line)',
+        borderRadius: 'var(--radius)',
+        background: 'var(--color-paper-light)',
+      }}
+    >
+      <p style={{ fontSize: 13, fontWeight: 600, margin: '0 0 8px' }}>Lokasi (untuk Peta Keluarga)</p>
+      <p style={{ fontSize: 12, opacity: 0.7, margin: '0 0 10px' }}>
+        Cukup kecamatan/kabupaten, BUKAN alamat lengkap -- demi privasi. Pilih provinsi dulu, baru kabupaten/kota, baru kecamatan.
+      </p>
+
+      {loading ? (
+        <p style={{ fontSize: 12, opacity: 0.6 }}>Memuat...</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <SearchableSelect
+            placeholder="Cari provinsi..."
+            options={provinsiOptions}
+            valueNama={provinsiNama}
+            onSelect={handleSelectProvinsi}
+          />
+          <SearchableSelect
+            placeholder={provinsiKode ? 'Cari kabupaten/kota...' : 'Pilih provinsi dulu'}
+            options={kabupatenOptions}
+            valueNama={kabupatenNama}
+            disabled={!provinsiKode}
+            onSelect={handleSelectKabupaten}
+          />
+          <SearchableSelect
+            placeholder={kabupatenKode ? 'Cari kecamatan (opsional)...' : 'Pilih kabupaten/kota dulu'}
+            options={kecamatanOptions}
+            valueNama={kecamatanNama}
+            disabled={!kabupatenKode}
+            onSelect={handleSelectKecamatan}
+          />
+
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || !kabupatenNama}
+            title={!kabupatenNama ? 'Isi minimal kabupaten/kota dulu' : undefined}
+            style={{
+              padding: '8px 14px',
+              background: 'transparent',
+              border: '1px solid var(--color-moss)',
+              borderRadius: 6,
+              fontSize: 13,
+              color: 'var(--color-moss)',
+              cursor: saving || !kabupatenNama ? 'default' : 'pointer',
+              opacity: !kabupatenNama ? 0.5 : 1,
+              alignSelf: 'flex-start',
+            }}
+          >
+            {saving ? 'Menyimpan & mencari koordinat...' : 'Simpan Lokasi'}
+          </button>
+
+          {koordinat.latitude !== null && (
+            <p style={{ fontSize: 11, opacity: 0.6, margin: 0 }}>
+              Koordinat tersimpan: {koordinat.latitude.toFixed(4)}, {koordinat.longitude!.toFixed(4)}
+            </p>
+          )}
+
+          {status && (
+            <p style={{ fontSize: 12, color: status.type === 'ok' ? 'var(--color-moss)' : 'var(--color-danger)', margin: 0 }}>
+              {status.text}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Dropdown searchable generik -- ketik utk filter (mis. "timur" -> "Jawa
+// Timur", "Kalimantan Timur", dst), klik salah satu utk pilih. Dipakai utk
+// ketiga level (provinsi/kabupaten/kecamatan) di LokasiPanel di atas.
+function SearchableSelect({
+  placeholder,
+  options,
+  valueNama,
+  disabled,
+  onSelect,
+}: {
+  placeholder: string;
+  options: WilayahOption[];
+  valueNama: string;
+  disabled?: boolean;
+  onSelect: (opt: WilayahOption | null) => void;
+}) {
+  const [query, setQuery] = useState(valueNama);
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Sinkron ulang teks yg ditampilkan kalau value berubah dari LUAR
+  // (mis. reset cascade dari parent saat provinsi diganti).
+  useEffect(() => {
+    setQuery(valueNama);
+  }, [valueNama]);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery(valueNama); // batal ketik yg belum dipilih, balik ke value terakhir
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [valueNama]);
+
+  const filtered =
+    query.trim() === ''
+      ? options
+      : options.filter((o) => o.nama.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <input
+        placeholder={placeholder}
+        value={query}
+        disabled={disabled}
+        onFocus={() => {
+          setQuery('');
+          setOpen(true);
+        }}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        style={{ ...inputStyle, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'not-allowed' : 'text' }}
+      />
+      {open && !disabled && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: 2,
+            maxHeight: 220,
+            overflowY: 'auto',
+            background: 'white',
+            border: '1px solid var(--color-line)',
+            borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(43,38,32,0.15)',
+            zIndex: 50,
+          }}
+        >
+          {filtered.length === 0 ? (
+            <div style={{ padding: '8px 12px', fontSize: 12, opacity: 0.6 }}>Tidak ada hasil.</div>
+          ) : (
+            filtered.slice(0, 100).map((opt) => (
+              <div
+                key={opt.kode}
+                // onMouseDown (bukan onClick) supaya kepilih SEBELUM input
+                // kehilangan focus (onBlur/click-outside di atas) -- kalau
+                // pakai onClick, blur duluan jalan dan menutup dropdown
+                // sebelum klik-nya sempat kedaftar.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSelect(opt);
+                  setQuery(opt.nama);
+                  setOpen(false);
+                }}
+                style={{
+                  padding: '8px 12px',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  borderBottom: '1px solid var(--color-line)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-paper-light)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'white')}
+              >
+                {opt.nama}
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

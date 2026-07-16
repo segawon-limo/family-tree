@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAdmin, isAdminFor, getScopedPersonIds } from '@/lib/auth';
 import crypto from 'crypto';
+// WAJIB: rute ini pakai requireAuth()/getSession() yang baca cookies().
+// Tanpa baris ini, Next.js mencoba PRERENDER rute ini saat `next build`,
+// dan pola `catch (e) { return e as Response }` di bawah ikut menelan
+// sinyal internal Next.js yang seharusnya bilang "rute ini dynamic,
+// jangan di-prerender" -- akibatnya build gagal dengan error "No response
+// is returned from route handler". Ditemukan dari build error nyata,
+// bukan pencegahan spekulatif -- JANGAN dihapus.
+export const dynamic = 'force-dynamic';
 
 // POST /api/admin/claims/[id]
 // Body: { type: 'klaim' | 'inquiry', action: 'approve' | 'reject' | 'resolve', catatan? }

@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAdmin, getScopedPersonIds } from '@/lib/auth';
+// WAJIB: rute ini pakai requireAuth()/getSession() yang baca cookies().
+// Tanpa baris ini, Next.js mencoba PRERENDER rute ini saat `next build`,
+// dan pola `catch (e) { return e as Response }` di bawah ikut menelan
+// sinyal internal Next.js yang seharusnya bilang "rute ini dynamic,
+// jangan di-prerender" -- akibatnya build gagal dengan error "No response
+// is returned from route handler". Ditemukan dari build error nyata,
+// bukan pencegahan spekulatif -- JANGAN dihapus.
+export const dynamic = 'force-dynamic';
 
 // Cuma super admin (role admin TANPA AdminScope row) yang boleh
 // grant/lihat scope orang lain. Kalau sub-admin bisa akses ini, dia bisa

@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAuth, requireAdmin, getScopedPersonIds } from '@/lib/auth';
+// WAJIB: rute ini pakai requireAuth()/getSession() yang baca cookies().
+// Tanpa baris ini, Next.js mencoba PRERENDER rute ini saat `next build`,
+// dan pola `catch (e) { return e as Response }` di bawah ikut menelan
+// sinyal internal Next.js yang seharusnya bilang "rute ini dynamic,
+// jangan di-prerender" -- akibatnya build gagal dengan error "No response
+// is returned from route handler". Ditemukan dari build error nyata,
+// bukan pencegahan spekulatif -- JANGAN dihapus.
+export const dynamic = 'force-dynamic';
 
 // GET: semua member yang login boleh lihat daftar person (dipakai search
 // di register & kalkulator panggilan -- HARUS tetap unrestricted untuk
@@ -48,6 +56,7 @@ export async function GET(req: NextRequest) {
     urutanKelahiran: number;
     tanggalLahir: Date | null;
     catatan: string | null;
+    fotoPath: string | null;
     parentsLink: { parent: { id: string; nama: string; gender: string } }[];
     userAccount: { id: string } | null;
   };
@@ -62,6 +71,13 @@ export async function GET(req: NextRequest) {
       urutanKelahiran: p.urutanKelahiran,
       tanggalLahir: p.tanggalLahir,
       catatan: p.catatan,
+      // BARU: sebelumnya field ini tidak pernah dikirim ke client sama
+      // sekali, padahal endpoint foto (GET /api/admin/persons/[id]/foto,
+      // baru ditambahkan) sudah bisa menyajikan filenya -- akibatnya foto
+      // profil TIDAK PERNAH tampil di manapun (tree hover preview, dst),
+      // selalu jatuh ke avatar inisial. Ditemukan saat membangun halaman
+      // profil person, bukan laporan terpisah -- root cause sama.
+      fotoUrl: p.fotoPath ? `/api/admin/persons/${p.id}/foto` : null,
       bapakId: bapak?.id ?? null,
       bapakNama: bapak?.nama ?? null,
       ibuId: ibu?.id ?? null,
@@ -88,7 +104,7 @@ export async function POST(req: NextRequest) {
   let session;
   try { session = await requireAdmin(); } catch (e) { return e as Response; }
   const body = await req.json();
-  const { nama, gender, urutanKelahiran, tanggalLahir, bapakId, ibuId, tipe, catatan } = body;
+  const { nama, gender, urutanKelahiran, tanggalLahir, tanggalWafat, bapakId, ibuId, tipe, catatan } = body;
 
   if (!nama || !gender || urutanKelahiran === undefined || urutanKelahiran === null) {
     return NextResponse.json(
@@ -98,6 +114,12 @@ export async function POST(req: NextRequest) {
   }
   if (gender !== 'L' && gender !== 'P') {
     return NextResponse.json({ error: 'Gender harus L atau P.' }, { status: 400 });
+  }
+  if (tanggalLahir && tanggalWafat && new Date(tanggalWafat) < new Date(tanggalLahir)) {
+    return NextResponse.json(
+      { error: 'Tanggal wafat tidak boleh sebelum tanggal lahir.' },
+      { status: 400 }
+    );
   }
 
   // Admin dengan scope terbatas cuma boleh nambah person yang terhubung ke
@@ -143,6 +165,7 @@ export async function POST(req: NextRequest) {
         gender,
         urutanKelahiran: Number(urutanKelahiran),
         tanggalLahir: tanggalLahir ? new Date(tanggalLahir) : null,
+        tanggalWafat: tanggalWafat ? new Date(tanggalWafat) : null,
         catatan: catatan || null,
       },
     });

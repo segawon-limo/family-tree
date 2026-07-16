@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAuth, requireAdmin, isAdminFor } from '@/lib/auth';
+// WAJIB: rute ini pakai requireAuth()/getSession() yang baca cookies().
+// Tanpa baris ini, Next.js mencoba PRERENDER rute ini saat `next build`,
+// dan pola `catch (e) { return e as Response }` di bawah ikut menelan
+// sinyal internal Next.js yang seharusnya bilang "rute ini dynamic,
+// jangan di-prerender" -- akibatnya build gagal dengan error "No response
+// is returned from route handler". Ditemukan dari build error nyata,
+// bukan pencegahan spekulatif -- JANGAN dihapus.
+export const dynamic = 'force-dynamic';
 
 // GET: semua member yang login boleh lihat detail person
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
@@ -25,6 +33,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     gender: person.gender,
     urutanKelahiran: person.urutanKelahiran,
     tanggalLahir: person.tanggalLahir,
+    tanggalWafat: person.tanggalWafat,
     catatan: person.catatan,
     bapakId: bapak?.id ?? null,
     ibuId: ibu?.id ?? null,
@@ -63,11 +72,21 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ error: 'Akses ditolak: kamu bukan admin untuk node ini.' }, { status: 403 });
   }
   const body = await req.json();
-  const { nama, gender, urutanKelahiran, tanggalLahir, bapakId, ibuId, tipe, catatan } = body;
+  const { nama, gender, urutanKelahiran, tanggalLahir, tanggalWafat, bapakId, ibuId, tipe, catatan } = body;
 
   if (!nama || !gender || urutanKelahiran === undefined || urutanKelahiran === null) {
     return NextResponse.json(
       { error: 'Nama, gender, dan urutan kelahiran wajib diisi.' },
+      { status: 400 }
+    );
+  }
+
+  // Validasi dasar: tanggal wafat tidak boleh sebelum tanggal lahir.
+  // Tidak mem-validasi "tidak boleh di masa depan" -- itu terlalu ketat
+  // untuk skenario input data historis/typo yang nanti dikoreksi ulang.
+  if (tanggalLahir && tanggalWafat && new Date(tanggalWafat) < new Date(tanggalLahir)) {
+    return NextResponse.json(
+      { error: 'Tanggal wafat tidak boleh sebelum tanggal lahir.' },
       { status: 400 }
     );
   }
@@ -118,6 +137,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         gender,
         urutanKelahiran: Number(urutanKelahiran),
         tanggalLahir: tanggalLahir ? new Date(tanggalLahir) : null,
+        tanggalWafat: tanggalWafat ? new Date(tanggalWafat) : null,
         catatan: catatan || null,
       },
     });
